@@ -4,7 +4,7 @@ Claude Code skill for making BSV-authenticated and paid API requests using [BRC-
 
 ## Install
 
-Requires [Claude Code](https://claude.ai/code) and [MetaNet Client](https://projectbabbage.com).
+Requires [Claude Code](https://claude.ai/code) and [MetaNet Client](https://getmetanet.com).
 
 ```
 /plugin marketplace add Calgooon/x402
