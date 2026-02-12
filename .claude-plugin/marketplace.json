@@ -1,0 +1,20 @@
+{
+  "name": "calgooon-x402",
+  "owner": {
+    "name": "Calgooon"
+  },
+  "metadata": {
+    "description": "BSV micropayment skill for Claude Code — BRC-31 auth + BRC-29 payment via MetaNet Client",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "x402",
+      "description": "Make BSV-authenticated or paid API requests using BRC-31 auth and BRC-29 micropayments with MetaNet Client wallet",
+      "source": "./",
+      "skills": [
+        "./skills/x402"
+      ]
+    }
+  ]
+}
