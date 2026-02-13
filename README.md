@@ -28,9 +28,10 @@ Claude will use the x402 skill automatically when it recognizes BSV auth or paym
 
 ## What It Does
 
-1. **Discovers** server capabilities via `/.well-known/x402-info`
+1. **Discovers** server capabilities via `/.well-known/x402-info` (including refund support)
 2. **Authenticates** using BRC-31 mutual auth (automatic handshake + session management)
 3. **Pays** using BRC-29 micropayments (automatic 402 handling — creates BSV transaction, retries)
+4. **Refunds** automatically — if a paid request fails, the server's BRC-29 refund is auto-internalized to your wallet
 
 ## Default Test Server
 
