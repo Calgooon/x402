@@ -7,9 +7,11 @@ Claude Code skill for making BSV-authenticated and paid API requests using [BRC-
 Requires [Claude Code](https://claude.ai/code) and [MetaNet Client](https://getmetanet.com).
 
 ```
-/plugin marketplace add Calgooon/x402
+/plugin marketplace add calgooon/x402
 /plugin install x402@calgooon-x402
 ```
+
+> **Troubleshooting:** If you get a "Failed to finalize marketplace cache" error, run `/plugin`, select **Manage marketplaces → Add marketplace**, and paste `https://github.com/Calgooon/x402`. Then run `/plugin install x402@calgooon-x402`.
 
 ## Prerequisites
 
