@@ -1,53 +1,106 @@
 # x402
 
-Claude Code skill for making BSV-authenticated and paid API requests using [BRC-31](https://brc.dev/31) mutual authentication and [BRC-29](https://brc.dev/29) micropayments.
-
-## Install
-
-Requires [Claude Code](https://claude.ai/code) and [MetaNet Client](https://getmetanet.com).
-
-```
-/plugin marketplace add calgooon/x402
-/plugin install x402@calgooon-x402
-```
-
-> **Troubleshooting:** If you get a "Failed to finalize marketplace cache" error, run `/plugin`, select **Manage marketplaces → Add marketplace**, and paste `https://github.com/Calgooon/x402`. Then run `/plugin install x402@calgooon-x402`.
-
-## Prerequisites
-
-- **MetaNet Client** desktop app running (provides wallet at `localhost:3321`)
-- **Python 3** with `requests` package (`pip install requests`)
-
-## Usage
-
-After installing, just describe what you want in Claude Code:
-
-- "Discover what APIs poc-server offers"
-- "Call the free endpoint on poc-server with BRC-31 auth"
-- "Make a paid request to poc-server"
-
-Claude will use the x402 skill automatically when it recognizes BSV auth or payment is needed.
+Claude Code skill for BSV micropayments. Discover, authenticate, and pay AI services with Bitcoin SV — all from natural language.
 
 ## What It Does
 
-1. **Discovers** server capabilities via `/.well-known/x402-info` (including refund support)
-2. **Authenticates** using BRC-31 mutual auth (automatic handshake + session management)
-3. **Pays** using BRC-29 micropayments (automatic 402 handling — creates BSV transaction, retries)
-4. **Refunds** automatically — if a paid request fails, the server's BRC-29 refund is auto-internalized to your wallet
+Say what you want. The skill handles the rest:
 
-## Default Test Server
+```
+"generate an image of a mountain sunset"
+"transcribe this audio file"
+"search twitter for AI agent discussions"
+"upload this file to NanoStore for a year"
+```
 
-The skill includes a reference server for testing:
+Under the hood:
 
-- **Live:** `https://poc-server.dev-a3e.workers.dev`
-  - `POST /free` — Auth only (no cost)
-  - `POST /paid` — Auth + 10 sat payment
+1. **Discovers** available services from the [402agints.com](https://402agints.com) agent directory
+2. **Authenticates** with [BRC-31](https://brc.dev/31) mutual auth (automatic handshake + session caching)
+3. **Pays** with [BRC-29](https://brc.dev/29) micropayments (automatic 402 handling, transaction creation)
+4. **Refunds** automatically if a paid request fails — the refund is internalized to your wallet with no manual steps
+
+## Available Services
+
+The skill discovers agents from [402agints.com/.well-known/agents](https://402agints.com/.well-known/agents):
+
+| Agent | What it does | Cost |
+|:------|:-------------|:-----|
+| **Banana Agent** | AI image generation (Google Nano Banana Pro) | ~$0.19/image |
+| **Veo Agent** | AI video generation with audio (Google Veo 3.1 Fast) | ~$0.75–$1.50/clip |
+| **Whisper Agent** | Speech-to-text transcription (Whisper Large v3 Turbo) | ~$0.0006/min |
+| **X Research Agent** | Twitter/X search, profiles, threads, trending | ~$0.005–$0.06/req |
+| **NanoStore** | File hosting with UHRP content addressing (Babbage) | ~$0.0004/MB/yr |
+
+Third-party services like NanoStore are listed in the directory with hosted manifests — clients connect directly, no proxy.
+
+## Install
+
+Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [MetaNet Client](https://getmetanet.com).
+
+```
+/install-plugin calgooon/x402
+```
+
+### Prerequisites
+
+- **MetaNet Client** running at `localhost:3321` (download from [getmetanet.com](https://getmetanet.com))
+- **Python 3** with `requests` (`pip install requests`)
+
+## Examples
+
+### Generate an image
+```
+User: "generate a photo of a cat wearing a top hat"
+→ skill discovers banana agent, pays ~9,000 sats, returns image URL
+```
+
+### Upload a file
+```
+User: "upload report.pdf to NanoStore for 1 year"
+→ skill discovers NanoStore, pays ~730 sats for 1MB/year, returns presigned upload URL
+```
+
+### Search Twitter
+```
+User: "find tweets about bitcoin scaling from the last 24 hours"
+→ skill discovers x-research agent, pays ~3,000 sats, returns sorted results
+```
+
+### Transcribe audio
+```
+User: "transcribe meeting.wav"
+→ skill discovers whisper agent, pays based on audio length, returns text
+```
 
 ## Protocol
 
-- **BRC-31**: Mutual HTTP authentication with identity keys and signed requests
-- **BRC-29**: HTTP micropayments via 402 Payment Required flow
-- **BRC-100**: MetaNet Client wallet interface (key derivation, signing, transaction creation)
+- **[BRC-31](https://brc.dev/31)**: Mutual HTTP authentication with identity keys and signed requests
+- **[BRC-29](https://brc.dev/29)**: HTTP micropayments via 402 Payment Required flow
+- **[BRC-100](https://brc.dev/100)**: MetaNet Client wallet interface (key derivation, signing, transaction creation)
+
+## How It Works
+
+```
+User request
+  → skill runs `list` to find matching agent by capabilities
+  → skill runs `discover <agent>` to read the x402-info manifest
+  → skill reads endpoint schemas, pricing, auth requirements
+  → skill runs `pay POST <agent>/<endpoint> '{...}'`
+    → BRC-31 handshake (automatic, cached 1 hour)
+    → initial request → server returns 402 with price
+    → wallet creates payment transaction
+    → retry with x-bsv-payment header → server accepts, returns result
+  → skill presents result to user
+```
+
+All payment is automatic — no confirmation prompts for typical micropayments (1–100,000 sats).
+
+## Agent Directory
+
+The skill resolves short names (like `banana` or `nanostore`) to full URLs via the [402agints.com](https://402agints.com) registry. Any BRC-31/BRC-29 service can be listed — including third-party services that don't serve their own discovery manifest.
+
+The registry is cached locally for 5 minutes. Full URLs (`https://...`) bypass the registry entirely.
 
 ## License
 
