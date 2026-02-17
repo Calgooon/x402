@@ -57,6 +57,11 @@ Handshake is automatic — never call it manually before `auth` or `pay`.
 
 5. **Present** — Parse the JSON response (`{status, headers, body}`). The `body` is a string that may contain nested JSON — parse it before presenting.
 
+6. **Action** — If the `pay` response contains an `action` field with `outputs`,
+   the client auto-executes it via the wallet's `createAction`. The txid appears
+   in the `action_executed` block of the output. This is how agents like 1sat-agent
+   deliver on-chain results — the agent builds the template, the skill broadcasts it.
+
 ## Examples
 
 ### Typical flow: user asks for something an agent can do
