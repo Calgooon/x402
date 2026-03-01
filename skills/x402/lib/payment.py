@@ -51,9 +51,11 @@ PAYMENT_VERSION = "1.0"
 # Maximum number of payment retry attempts before giving up.
 MAX_PAYMENT_ATTEMPTS = 3
 
-# Header threshold: if the payment JSON exceeds this size, send it in
-# the request body instead of the header (matches TS SDK's 6KB threshold).
-HEADER_SIZE_THRESHOLD = 6144  # 6KB
+# Threshold for switching from header to multipart payment transport.
+# When payment JSON exceeds this, we send it as a multipart/form-data body
+# part instead of the x-bsv-payment header (BRC-105 multipart transport).
+# 8KB gives safe margin under the ~16KB typical header limit.
+MULTIPART_THRESHOLD = 8_000
 
 
 class PaymentError(Exception):
@@ -459,6 +461,57 @@ def create_payment(
 
 
 # ---------------------------------------------------------------------------
+# Multipart body construction (BRC-105 multipart transport)
+# ---------------------------------------------------------------------------
+
+
+def build_multipart_body(
+    payment_json: str,
+    original_body: bytes | str | None = None,
+    original_content_type: str | None = None,
+) -> tuple[bytes, str]:
+    """Build a multipart/form-data body for BRC-105 multipart payment transport.
+
+    Returns (body_bytes, content_type_header_value).
+    """
+    boundary = f"----BsvPayment{os.urandom(8).hex()}"
+    parts = []
+
+    # Part 1: x-bsv-payment
+    parts.append(f"--{boundary}\r\n")
+    parts.append('Content-Disposition: form-data; name="x-bsv-payment"\r\n')
+    parts.append("Content-Type: application/json\r\n")
+    parts.append("\r\n")
+    parts.append(payment_json)
+    parts.append("\r\n")
+
+    # Part 2: body (if present)
+    if original_body is not None:
+        body_bytes = (
+            original_body.encode("utf-8")
+            if isinstance(original_body, str)
+            else original_body
+        )
+        if len(body_bytes) > 0:
+            ct = original_content_type or "application/octet-stream"
+            parts.append(f"--{boundary}\r\n")
+            parts.append('Content-Disposition: form-data; name="body"\r\n')
+            parts.append(f"Content-Type: {ct}\r\n")
+            parts.append("\r\n")
+            # Flush text parts first, then append binary body
+            text_so_far = "".join(parts).encode("utf-8")
+            result = text_so_far + body_bytes + f"\r\n--{boundary}--\r\n".encode("utf-8")
+            content_type = f"multipart/form-data; boundary={boundary}"
+            return result, content_type
+
+    # Closing boundary (no body part case)
+    parts.append(f"--{boundary}--\r\n")
+    result = "".join(parts).encode("utf-8")
+    content_type = f"multipart/form-data; boundary={boundary}"
+    return result, content_type
+
+
+# ---------------------------------------------------------------------------
 # High-level paid request
 # ---------------------------------------------------------------------------
 
@@ -576,34 +629,28 @@ def paid_request(
         # Build the payment header value
         payment_json = json.dumps(payment, separators=(",", ":"))
 
-        # Determine transport mode (header vs body).
-        # Body mode ONLY works when the original request has no body to
-        # preserve — otherwise we'd overwrite the application payload
-        # (e.g. {"fileSize":...}) with payment JSON.  Most servers
-        # (NanoStore, banana-agent) don't support body mode anyway.
+        # Determine transport: header (small) vs multipart (large).
+        # BRC-105 multipart transport wraps both the payment JSON and
+        # original body into multipart/form-data parts — works with or
+        # without an original body.
         retry_headers = dict(original_headers)
-        has_original_body = body is not None and len(body) > 0
 
-        if len(payment_json) > HEADER_SIZE_THRESHOLD and not has_original_body:
-            # Large payment, no original body -- send as body.
-            log.debug(
-                "Payment JSON too large for header (%d bytes), using body transport",
+        if len(payment_json) > MULTIPART_THRESHOLD:
+            # BRC-105 multipart transport
+            log.info(
+                "Payment JSON %d bytes > %d threshold, using multipart transport",
                 len(payment_json),
+                MULTIPART_THRESHOLD,
             )
-            retry_headers["x-bsv-payment"] = "body"
-            retry_body = payment_json.encode("utf-8")
-            retry_headers["content-type"] = "application/json"
+            original_ct = original_headers.get("content-type")
+            multipart_body, multipart_ct = build_multipart_body(
+                payment_json, body, original_ct,
+            )
+            retry_headers.pop("content-type", None)
+            retry_headers["content-type"] = multipart_ct
+            retry_body = multipart_body
         else:
-            # Normal case -- payment JSON in header.
-            # For large payments with an original body, we must use the
-            # header even though it's big.  Express/GCP allows headers
-            # up to ~80KB; Cloudflare Workers up to 8KB per header.
-            if len(payment_json) > HEADER_SIZE_THRESHOLD:
-                log.warning(
-                    "Payment JSON is %d bytes but body mode unavailable "
-                    "(original body present). Sending in header anyway.",
-                    len(payment_json),
-                )
+            # Standard header transport
             retry_headers["x-bsv-payment"] = payment_json
             retry_body = body
 

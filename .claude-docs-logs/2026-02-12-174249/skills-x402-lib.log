@@ -1,0 +1,9 @@
+Created `skills/x402/lib/CLAUDE.md` — a comprehensive 233-line documentation file covering:
+
+- **All 9 source files** with their purposes
+- **Key functions** with signatures, behavior, and flow descriptions
+- **Protocol constants** (auth protocol IDs, payment versions, wire format sentinels)
+- **Exception hierarchy** across all modules
+- **Request flow diagrams** for both authenticated and paid request paths
+- **Usage patterns** showing how the library is called from the CLI
+- **Implementation details** like signing key ID formats, JSON normalization, output ordering, and crypto fallbacks
