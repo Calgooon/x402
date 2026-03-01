@@ -55,7 +55,7 @@ MAX_PAYMENT_ATTEMPTS = 3
 # When payment JSON exceeds this, we send it as a multipart/form-data body
 # part instead of the x-bsv-payment header (BRC-105 multipart transport).
 # 8KB gives safe margin under the ~16KB typical header limit.
-MULTIPART_THRESHOLD = 8_000
+MULTIPART_THRESHOLD = 50_000
 
 
 class PaymentError(Exception):
