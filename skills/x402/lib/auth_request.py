@@ -20,6 +20,7 @@ Reference implementations:
 
 from __future__ import annotations
 
+import logging
 import requests as _requests
 from urllib.parse import urlparse
 
@@ -27,8 +28,10 @@ from lib.serialize import serialize_request
 from lib.headers import filter_signable_headers, build_auth_headers
 from lib.metanet import get_identity_key, create_signature
 from lib.nonce import generate_nonce, generate_request_id, nonce_to_base64
-from lib.session import Session
+from lib.session import Session, clear_session
 from lib.handshake import get_or_create_session
+
+log = logging.getLogger(__name__)
 
 
 # Protocol ID for BRC-31 general message signatures.
@@ -53,6 +56,7 @@ def authenticated_request(
     headers: dict[str, str] | None = None,
     body: bytes | str | None = None,
     session: Session | None = None,
+    _allow_session_refresh: bool = True,
 ) -> _requests.Response:
     """Make an authenticated BRC-31 request.
 
@@ -217,6 +221,34 @@ def authenticated_request(
         )
     except _requests.RequestException as e:
         raise AuthRequestError(f"HTTP request failed: {e}") from e
+
+    # -----------------------------------------------------------------------
+    # 11. One-shot session recovery on 401
+    #
+    # A 401 means the server rejected our BRC-31 auth — almost always because
+    # its side of the session expired or was evicted while ours was still
+    # cached locally. Clear the stale session, force a fresh handshake, and
+    # retry the *same* request exactly once. This re-signs and re-sends an
+    # identical request (same body, same x-bsv-payment header if present), so
+    # it never creates a new payment — it's safe to retry.
+    # -----------------------------------------------------------------------
+    if response.status_code == 401 and _allow_session_refresh:
+        log.info(
+            "Got 401 from %s — clearing stale session and re-handshaking once.",
+            server_base,
+        )
+        try:
+            clear_session(server_base)
+        except Exception:
+            pass  # best-effort; a fresh handshake will overwrite it anyway
+        return authenticated_request(
+            method,
+            url,
+            headers=headers,
+            body=body,
+            session=None,                 # force get_or_create_session -> handshake
+            _allow_session_refresh=False,  # only retry once; avoid loops
+        )
 
     return response
 

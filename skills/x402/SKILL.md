@@ -139,6 +139,7 @@ Only consult this section if something goes wrong.
 | Discovery returns 404 | Server may not have `/.well-known/x402-info`; proceed with known endpoint info or ask user |
 | Connection error | Server may be down or wallet not running |
 | Payment error | Tell user to check MetaNet Client for approval prompt; may also be insufficient funds |
+| HTTP 401 | Handled automatically — the client clears the stale session, re-handshakes, and retries once. If a 401 still surfaces, the server genuinely rejected auth (not a stale session). |
 | `Signature is not valid` on POST | Session may be stale. Clear: `python3 ./cli.py session --clear <server_url>` |
 | Persistent auth failures | Clear session: `python3 ./cli.py session --clear <server_url>` |
 | Need verbose output | Use full CLI: `python3 ./cli.py -v auth POST "<url>"` |
