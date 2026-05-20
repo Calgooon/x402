@@ -173,4 +173,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # Emit a clean JSON error instead of a raw traceback so callers
+        # (the /x402 skill) can always parse stdout. Common cases: wallet
+        # not running, wallet approval timeout, network errors.
+        print(json.dumps({"error": type(e).__name__, "message": str(e)}, indent=2))
+        sys.exit(1)

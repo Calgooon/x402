@@ -24,13 +24,17 @@ class MetaNetClientError(Exception):
     pass
 
 
-def _call(method_name: str, params: dict) -> dict:
+def _call(method_name: str, params: dict, timeout: int = 30) -> dict:
     """Make a POST request to MetaNet Client.
 
     Args:
         method_name: API method (e.g. "getPublicKey", "createSignature").
             This becomes the URL path: POST http://localhost:3321/{method_name}
         params: JSON body params to send.
+        timeout: Seconds to wait. Defaults to 30, but transaction-building
+            calls (createAction, internalizeAction) use a longer timeout
+            because the wallet may block on a user-approval dialog or be
+            busy internalizing a prior transaction.
 
     Returns:
         Parsed JSON response dict.
@@ -45,7 +49,7 @@ def _call(method_name: str, params: dict) -> dict:
             url,
             headers=COMMON_HEADERS,
             json=params,
-            timeout=30,
+            timeout=timeout,
         )
     except requests.ConnectionError as e:
         raise MetaNetClientError(
@@ -225,7 +229,7 @@ def create_action(
             "acceptDelayedBroadcast": accept_delayed_broadcast,
             "randomizeOutputs": randomize_outputs,
         },
-    })
+    }, timeout=120)
 
     if "txid" not in result:
         raise MetaNetClientError(
@@ -280,5 +284,5 @@ def internalize_action(
         "tx": list(tx_bytes),       # JSON number array, same as createAction
         "outputs": outputs,
         "description": description,
-    })
+    }, timeout=120)
     return result
