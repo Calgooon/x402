@@ -57,7 +57,7 @@ def paid_request(
 ```
 - **Purpose:** High-level entry point for paid endpoints. Makes an authenticated request, and if the server returns 402, automatically constructs and submits a BRC-29 payment, then retries.
 - **Flow:** `authenticated_request()` → if 402: parse payment headers → `create_payment()` → retry with `x-bsv-payment` header → repeat up to `max_payment_attempts`
-- **Payment transport:** If payment JSON exceeds 6KB and there's no original body, sends payment in the request body (`x-bsv-payment: body`); otherwise sends payment JSON in the header value.
+- **Payment transport:** If payment JSON exceeds 8KB (`MULTIPART_THRESHOLD`) **and** the server advertises multipart support (`x-bsv-payment-transports: multipart`), sends payment (+ any original body) as BRC-105 multipart/form-data; otherwise sends payment JSON in the `x-bsv-payment` header. Typical payments (~2KB) use the header.
 
 ### do_handshake (handshake.py)
 
@@ -181,7 +181,7 @@ class Session:
 | `HANDSHAKE_PATH` | `"/.well-known/auth"` | handshake.py | Server handshake endpoint |
 | `METANET_URL` | `"http://localhost:3321"` | metanet.py | MetaNet Client wallet address |
 | `EMPTY_SENTINEL` | `b'\xff' * 9` | serialize.py | Binary "missing/empty" marker in wire format |
-| `HEADER_SIZE_THRESHOLD` | `6144` (6KB) | payment.py | Payment JSON size limit for header transport |
+| `MULTIPART_THRESHOLD` | `8192` (8KB) | payment.py | Above this, payment uses BRC-105 multipart transport (when the server advertises it) |
 
 ## Exception Hierarchy
 
@@ -222,7 +222,7 @@ paid_request(method, url, headers, body)
   │   │   ├─ get_public_key(PAYMENT_PROTOCOL, key_id, server_key)
   │   │   ├─ build_p2pkh_script(derived_pubkey)
   │   │   └─ create_action(outputs, ...) — via MetaNet Client
-  │   ├─ attach payment as x-bsv-payment header (or body if >6KB)
+  │   ├─ attach payment as x-bsv-payment header (or multipart if >8KB & server supports it)
   │   └─ authenticated_request(method, url, headers_with_payment, body)
   └─ return response
 ```

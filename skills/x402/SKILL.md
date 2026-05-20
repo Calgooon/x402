@@ -116,7 +116,7 @@ The `discover` command shows which endpoints support refunds. The `pay` command 
 
 Payment is sent via `x-bsv-payment` header as JSON: `{"derivationPrefix":"...","derivationSuffix":"...","transaction":"<base64 BEEF>"}`. The client handles this automatically.
 
-**Header-only servers:** Most servers only accept payment in the header. The client has a body-mode fallback for payments >6KB, but only uses it when the request has no original body to preserve. Typical payments are ~2KB, well under the threshold.
+**Transport:** Payment normally rides in the `x-bsv-payment` header. For payments larger than 8KB, the client uses BRC-105 multipart/form-data transport **when the server advertises it** (`x-bsv-payment-transports: multipart` on the 402); otherwise it keeps the payment in the header. Typical payments are ~2KB — well under the threshold — so header transport is what's used in practice. (No live x402agency.com agent currently advertises multipart.)
 
 ## Default Test Server
 

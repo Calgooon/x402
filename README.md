@@ -18,7 +18,7 @@ Under the hood:
 1. **Discovers** available services from the [x402agency.com](https://x402agency.com) agent directory
 2. **Authenticates** with [BRC-31](https://brc.dev/31) mutual auth (automatic handshake + session caching)
 3. **Pays** with [BRC-29](https://brc.dev/29) micropayments (automatic 402 handling, transaction creation)
-4. **Refunds** automatically if a paid request fails — the refund is internalized to your wallet with no manual steps
+4. **Refunds** automatically — both service-failure refunds (a paid request fails) and excess refunds (you overpaid a token-priced agent) are detected and internalized to your wallet with no manual steps
 
 ## Available Services
 
@@ -79,7 +79,8 @@ The `/x402` command is the entry point. You can use it conversationally or with 
 | `/x402 list` | List all registered agents with capabilities and pricing |
 | `/x402 discover <agent>` | Fetch the x402-info manifest — endpoints, schemas, pricing, error codes |
 | `/x402 auth <METHOD> <agent/path>` | Make a BRC-31 authenticated request (no payment) |
-| `/x402 pay <METHOD> <agent/path> [body]` | Make an authenticated + paid request (auto-handles 402 flow) |
+| `/x402 pay <METHOD> <agent/path> [body]` | Make an authenticated + paid request (auto-handles 402 flow, auto-internalizes refunds) |
+| `/x402 execute-action <json>` | Broadcast a pending action template (e.g. a 1Sat inscription) returned by `pay`, after you confirm |
 | `/x402 identity` | Show your wallet's identity key |
 | `/x402 session <url>` | Inspect a cached BRC-31 session |
 
