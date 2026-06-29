@@ -34,6 +34,7 @@ All operations use the helper script bundled with this skill. All commands outpu
 | `python3 ./scripts/brc31_helpers.py discover <name_or_url>` | Learn server endpoints, auth requirements, costs |
 | `python3 ./scripts/brc31_helpers.py auth <METHOD> <name_or_url> [body]` | Authenticated request (no payment) |
 | `python3 ./scripts/brc31_helpers.py pay <METHOD> <name_or_url> [body]` | Authenticated + paid request (auto-handles 402) |
+| `python3 ./scripts/brc31_helpers.py upload <file> <name_or_url> [retention_min] [--public-base URL]` | UHRP file upload: pays `/upload`, PUTs the bytes, returns the public URL |
 | `python3 ./scripts/brc31_helpers.py identity` | Get wallet's 66-char hex identity key |
 | `python3 ./scripts/brc31_helpers.py execute-action <json>` | Execute a pending action template (broadcasts inscription tx after user confirms) |
 | `python3 ./scripts/brc31_helpers.py session <base_url>` | Inspect cached session |
@@ -67,6 +68,34 @@ Handshake is automatic — never call it manually before `auth` or `pay`.
    python3 ./scripts/brc31_helpers.py execute-action '<action_json>'
    ```
    The result includes `txid` and `inscription_id`.
+
+## File uploads (UHRP)
+
+For UHRP storage servers (`nanostore`, or a protocol-compatible port like
+`bsv-storage-cloudflare`), use the **`upload`** command. It does the whole
+two-step flow in one shot: pays `POST /upload` (BRC-29), PUTs the file bytes
+to the presigned storage URL with the required headers, derives the public
+URL, and verifies it serves.
+
+```bash
+# nanostore: public URL is auto-derived from the discovery manifest
+python3 ./scripts/brc31_helpers.py upload ./report.html nanostore 525600
+
+# R2-backed server: its S3 upload endpoint is NOT the public domain, so pass
+# the public base (the bucket's r2.dev URL or a custom domain)
+python3 ./scripts/brc31_helpers.py upload ./report.html \
+  https://bsv-storage-cloudflare.dev-a3e.workers.dev 525600 \
+  --public-base https://pub-XXXX.r2.dev
+```
+
+- `retention_min` is the hosting duration in minutes (default `525600` = 1 year).
+- Content-Type is guessed from the file extension so the file renders in a browser.
+- Returns JSON with `publicURL`, `objectKey`, `amountSats`, and `verified`.
+- **Heavy-wallet caveat:** `/upload` payment rides in the request header.
+  If the paying wallet funds from coins with large proof BEEFs, the payment
+  can exceed a GCS-fronted server's ~8KB header cap and return **413**. The
+  command reports this clearly. Cloudflare-hosted UHRP servers accept large
+  headers; otherwise pay from a wallet with lighter UTXOs.
 
 ## Examples
 

@@ -24,6 +24,13 @@ try:
 except ImportError:
     HAS_PAYMENT = False
 
+# UHRP upload default retention (1 year, in minutes). Imported from the
+# upload module so the helper and CLI share one source of truth.
+try:
+    from lib.upload import DEFAULT_RETENTION_MINUTES
+except ImportError:
+    DEFAULT_RETENTION_MINUTES = 525_600
+
 log = logging.getLogger("x402-client")
 
 
@@ -353,6 +360,27 @@ def cmd_pay(args):
     return 0
 
 
+def cmd_upload(args):
+    """End-to-end UHRP file upload: pay /upload, PUT bytes, print public URL."""
+    from lib.upload import do_upload, UploadError
+
+    try:
+        result = do_upload(
+            args.file,
+            args.server,
+            retention_minutes=args.retention,
+            public_base=args.public_base,
+        )
+    except UploadError as e:
+        print_err(str(e))
+        return 1
+
+    print(json.dumps(result, indent=2))
+    if result.get("publicURL"):
+        print(f"\n{C.BOLD}Public URL:{C.RESET} {C.CYAN}{result['publicURL']}{C.RESET}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
@@ -473,6 +501,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request body (JSON string). Optional.",
     )
 
+    # --- upload ---
+    p_up = subparsers.add_parser(
+        "upload",
+        help="UHRP file upload (pay /upload + PUT bytes + derive public URL).",
+    )
+    p_up.add_argument("file", help="Path to the file to upload.")
+    p_up.add_argument("server", help="UHRP server name (e.g. nanostore) or full URL.")
+    p_up.add_argument(
+        "retention",
+        nargs="?",
+        type=int,
+        default=DEFAULT_RETENTION_MINUTES,
+        help="Hosting duration in minutes (default 525600 = 1 year).",
+    )
+    p_up.add_argument(
+        "--public-base",
+        default=None,
+        help="Public URL base for the served file (needed for R2-backed "
+             "servers whose S3 endpoint differs from their public domain).",
+    )
+
     return parser
 
 
@@ -509,6 +558,7 @@ def main() -> int:
         "session": cmd_session,
         "auth": cmd_auth,
         "pay": cmd_pay,
+        "upload": cmd_upload,
     }
 
     handler = dispatch.get(args.command)
