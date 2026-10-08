@@ -10,7 +10,7 @@ This library provides the complete client-side implementation for BSV-authentica
 - **Binary serialization**: Wire-compatible request/response serialization matching the TS SDK and Rust server implementations
 - **MetaNet Client integration**: Wallet operations (identity keys, key derivation, signatures, transaction creation) via the local HTTP API
 
-All cryptographic operations are delegated to MetaNet Client (localhost:3321). The library uses the `requests` HTTP library for both wallet calls and server requests.
+All cryptographic operations are delegated to the wallet at `X402_WALLET_URL` (default MetaNet Client, localhost:3321). The library uses the `requests` HTTP library for both wallet calls and server requests.
 
 ## Files
 
@@ -164,9 +164,11 @@ class Session:
     server_identity_key: str
     server_nonce_b64: str
     client_nonce_b64: str
+    client_identity_key: str
     timestamp: float
 ```
-- **Persistence:** JSON files in `~/.local/share/brc31-sessions/`, named by first 16 hex chars of `SHA256(server_url)`.
+- **Persistence:** JSON files in `~/.local/share/brc31-sessions/`, named by first 16 hex chars of `SHA256(server_url + "\n" + client_identity_key)`.
+- **Identity binding:** `load_session()`/`clear_session()` default to the wallet's current identity key (one cached `getPublicKey` per process). A stored session whose `client_identity_key` differs, or is missing (pre-1.1.1 file), is deleted and not returned.
 - **TTL:** Default 1 hour. Expired sessions are auto-deleted on load.
 - **Functions:** `save_session()`, `load_session()`, `clear_session()`, `clear_all_sessions()`
 
@@ -179,7 +181,7 @@ class Session:
 | `AUTH_VERSION_VALUE` | `"0.1"` | headers.py | BRC-104 auth version |
 | `PAYMENT_VERSION` | `"1.0"` | payment.py | BRC-29 payment protocol version |
 | `HANDSHAKE_PATH` | `"/.well-known/auth"` | handshake.py | Server handshake endpoint |
-| `METANET_URL` | `"http://localhost:3321"` | metanet.py | MetaNet Client wallet address |
+| `X402_WALLET_URL` (env) | `"http://localhost:3321"` | metanet.py `wallet_url()` | Wallet address; `METANET_URL` env is accepted as a fallback |
 | `EMPTY_SENTINEL` | `b'\xff' * 9` | serialize.py | Binary "missing/empty" marker in wire format |
 | `MULTIPART_THRESHOLD` | `8192` (8KB) | payment.py | Above this, payment uses BRC-105 multipart transport (when the server advertises it) |
 

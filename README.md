@@ -48,7 +48,7 @@ Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Meta
 
 ### Prerequisites
 
-- **MetaNet Client** running at `localhost:3321` (download from [getmetanet.com](https://getmetanet.com))
+- **MetaNet Client** running at `localhost:3321` (download from [getmetanet.com](https://getmetanet.com)), or any BRC-100 wallet at the URL in `X402_WALLET_URL`
 - **Python 3** with `requests` (`pip install requests`)
 
 ## Usage
@@ -134,6 +134,16 @@ Agent names (`banana`, `nanostore`, `whisper`, etc.) resolve automatically. Full
 ```
 
 All payment is automatic — no confirmation prompts for typical micropayments (1–100,000 sats).
+
+## Wallet selection and sessions
+
+Every wallet call goes to `X402_WALLET_URL` (default `http://localhost:3321`). Set it to use a second wallet daemon, e.g. `X402_WALLET_URL=http://localhost:3322`.
+
+BRC-31 sessions are cached in `~/.local/share/brc31-sessions/` as `SHA256(server_url + "\n" + client_identity_key)[:16].json`, and each file records the identity that opened it. A session is only reused by the wallet that opened it: when the wallet reports a different identity key, the helper handshakes afresh. Session files from versions before 1.1.1 (keyed by server URL only) are deleted on first use.
+
+## Changelog
+
+- **1.1.1** — Sessions keyed by (server URL, client identity key); a session opened by one wallet is never reused by another (a wallet switch on the same server previously made the server derive the BRC-29 payee key from the wrong identity). Wallet URL configurable via `X402_WALLET_URL`. `createAction` accepts `tx` returned as an index-keyed object. Added `tests/` (`python3 -m pytest -q`).
 
 ## Agent Directory
 

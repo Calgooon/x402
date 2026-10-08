@@ -4,14 +4,40 @@ Provides a Python interface to the MetaNet Client wallet application
 running locally on macOS. MetaNet Client implements the BRC-100 wallet
 interface and exposes it via HTTP at localhost:3321.
 
+The wallet URL is configurable with the ``X402_WALLET_URL`` environment
+variable (default ``http://localhost:3321``), so the same helper can drive a
+second wallet daemon (e.g. ``http://localhost:3322``). Every wallet call
+(identity, signatures, createAction, internalizeAction) goes through
+:func:`wallet_url`.
+
 All methods make synchronous HTTP calls using the requests library.
 """
 
 import requests
 import json
+import os
 
 
-METANET_URL = "http://localhost:3321"
+DEFAULT_WALLET_URL = "http://localhost:3321"
+
+# Per-process cache of the wallet identity key, keyed by wallet URL.
+# One getPublicKey call per command is enough; switching X402_WALLET_URL
+# mid-process looks up the new wallet's key instead of reusing the old one.
+_identity_cache: dict[str, str] = {}
+
+
+def wallet_url() -> str:
+    """Return the wallet base URL, read from the environment on each call.
+
+    ``X402_WALLET_URL`` wins; ``METANET_URL`` is honoured for compatibility
+    with older local patches; otherwise ``http://localhost:3321``.
+    """
+    url = (
+        os.environ.get("X402_WALLET_URL")
+        or os.environ.get("METANET_URL")
+        or DEFAULT_WALLET_URL
+    )
+    return url.rstrip("/")
 
 COMMON_HEADERS = {
     "Origin": "http://localhost",
@@ -29,7 +55,7 @@ def _call(method_name: str, params: dict, timeout: int = 30) -> dict:
 
     Args:
         method_name: API method (e.g. "getPublicKey", "createSignature").
-            This becomes the URL path: POST http://localhost:3321/{method_name}
+            This becomes the URL path: POST {wallet_url()}/{method_name}
         params: JSON body params to send.
         timeout: Seconds to wait. Defaults to 30, but transaction-building
             calls (createAction, internalizeAction) use a longer timeout
@@ -43,7 +69,8 @@ def _call(method_name: str, params: dict, timeout: int = 30) -> dict:
         MetaNetClientError: if the request fails, times out, or the
             wallet returns an error response.
     """
-    url = f"{METANET_URL}/{method_name}"
+    base = wallet_url()
+    url = f"{base}/{method_name}"
     try:
         resp = requests.post(
             url,
@@ -53,7 +80,7 @@ def _call(method_name: str, params: dict, timeout: int = 30) -> dict:
         )
     except requests.ConnectionError as e:
         raise MetaNetClientError(
-            f"Cannot connect to MetaNet Client at {METANET_URL}. "
+            f"Cannot connect to MetaNet Client at {base}. "
             "Is the application running?"
         ) from e
     except requests.Timeout as e:
@@ -95,18 +122,29 @@ def _call(method_name: str, params: dict, timeout: int = 30) -> dict:
 def get_identity_key() -> str:
     """Get the wallet's identity public key (66-char hex compressed).
 
-    Calls POST /getPublicKey with {"identityKey": true}.
+    Calls POST /getPublicKey with {"identityKey": true}. The result is
+    cached per process and per wallet URL.
 
     Returns:
         Hex public key string, e.g. "03abc..."
     """
+    base = wallet_url()
+    cached = _identity_cache.get(base)
+    if cached:
+        return cached
     result = _call("getPublicKey", {"identityKey": True})
     pubkey = result.get("publicKey")
     if not pubkey or not isinstance(pubkey, str):
         raise MetaNetClientError(
             f"Unexpected getPublicKey response (missing 'publicKey'): {result}"
         )
+    _identity_cache[base] = pubkey
     return pubkey
+
+
+def reset_identity_cache() -> None:
+    """Forget cached identity keys (used by tests)."""
+    _identity_cache.clear()
 
 
 def get_public_key(
@@ -236,10 +274,22 @@ def create_action(
             f"Unexpected createAction response (missing 'txid'): {result}"
         )
 
-    # Convert tx from JSON number array to bytes
+    # Convert tx from JSON number array to bytes. Some wallet builds
+    # serialize the byte array as an object with numeric string keys
+    # ({"0": 1, "1": 1, ...}) — accept both forms.
     tx_array = result.get("tx")
     if isinstance(tx_array, list):
         result["tx"] = bytes(tx_array)
+    elif isinstance(tx_array, dict):
+        try:
+            result["tx"] = bytes(
+                tx_array[str(i)] for i in range(len(tx_array))
+            )
+        except (KeyError, ValueError, TypeError) as exc:
+            raise MetaNetClientError(
+                f"Unexpected createAction response ('tx' object not "
+                f"convertible to bytes): {exc}"
+            )
     elif tx_array is not None:
         raise MetaNetClientError(
             f"Unexpected createAction response ('tx' is not an array): "

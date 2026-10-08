@@ -103,6 +103,7 @@ def print_session(session: Session):
     age = time.time() - session.timestamp
     print_header("Server URL", session.server_url)
     print_header("Server identity key", session.server_identity_key)
+    print_header("Client identity key", session.client_identity_key)
     print_header("Server nonce", session.server_nonce_b64)
     print_header("Client nonce", session.client_nonce_b64)
     print_header("Age", format_age(age))

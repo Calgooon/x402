@@ -1,6 +1,6 @@
 ---
 name: x402
-description: "Make BSV-authenticated or paid API requests. Use for: BRC-31 auth, 402 payment, BSV micropayments, x402, paid API calls. Requires MetaNet Client wallet running at localhost:3321."
+description: "Make BSV-authenticated or paid API requests. Use for: BRC-31 auth, 402 payment, BSV micropayments, x402, paid API calls. Requires a BRC-100 wallet (MetaNet Client at localhost:3321, or X402_WALLET_URL)."
 argument-hint: [URL or description of API to call]
 ---
 
@@ -11,6 +11,8 @@ argument-hint: [URL or description of API to call]
 curl -s -H "Origin: http://localhost" http://localhost:3321/isAuthenticated
 ```
 If not running, tell the user to start it (macOS: `/Applications/Metanet Client.app`, or download from https://getmetanet.com).
+
+**Choosing the wallet:** every wallet call (identity, signatures, `createAction`, `internalizeAction`, `upload`, `execute-action`) goes to `X402_WALLET_URL` (default `http://localhost:3321`). To pay from a second wallet daemon, prefix the command: `X402_WALLET_URL=http://localhost:3322 python3 ./scripts/brc31_helpers.py pay ...`. BRC-31 sessions are cached per (server, wallet identity key), so switching wallets always gets a fresh handshake for the new identity — never the other wallet's session.
 
 ## Task
 
@@ -37,7 +39,7 @@ All operations use the helper script bundled with this skill. All commands outpu
 | `python3 ./scripts/brc31_helpers.py upload <file> <name_or_url> [retention_min] [--public-base URL]` | UHRP file upload: pays `/upload`, PUTs the bytes, returns the public URL |
 | `python3 ./scripts/brc31_helpers.py identity` | Get wallet's 66-char hex identity key |
 | `python3 ./scripts/brc31_helpers.py execute-action <json>` | Execute a pending action template (broadcasts inscription tx after user confirms) |
-| `python3 ./scripts/brc31_helpers.py session <base_url>` | Inspect cached session |
+| `python3 ./scripts/brc31_helpers.py session <base_url>` | Inspect the current wallet's cached session |
 
 Handshake is automatic — never call it manually before `auth` or `pay`.
 

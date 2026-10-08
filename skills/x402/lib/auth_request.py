@@ -105,6 +105,21 @@ def authenticated_request(
     # -----------------------------------------------------------------------
     # 2. Get or create session (handshake if needed)
     # -----------------------------------------------------------------------
+    try:
+        my_identity_key = get_identity_key()
+    except Exception as e:
+        raise AuthRequestError(f"Failed to get identity key: {e}") from e
+
+    # A session belongs to the wallet that opened it. Never sign over a
+    # session another identity opened: the server would bind the request
+    # (and any BRC-29 payment) to the wrong key.
+    if session is not None and session.client_identity_key != my_identity_key:
+        log.info(
+            "Supplied session for %s belongs to another identity; ignoring it.",
+            server_base,
+        )
+        session = None
+
     if session is None:
         try:
             session = get_or_create_session(server_base)
@@ -189,11 +204,6 @@ def authenticated_request(
     # -----------------------------------------------------------------------
     # 8. Build BRC-104 auth headers
     # -----------------------------------------------------------------------
-    try:
-        my_identity_key = get_identity_key()
-    except Exception as e:
-        raise AuthRequestError(f"Failed to get identity key: {e}") from e
-
     auth_headers = build_auth_headers(
         identity_key=my_identity_key,
         message_type="general",
@@ -238,7 +248,7 @@ def authenticated_request(
             server_base,
         )
         try:
-            clear_session(server_base)
+            clear_session(server_base, client_identity_key=my_identity_key)
         except Exception:
             pass  # best-effort; a fresh handshake will overwrite it anyway
         return authenticated_request(

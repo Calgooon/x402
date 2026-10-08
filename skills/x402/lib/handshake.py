@@ -153,6 +153,7 @@ def do_handshake(server_url: str) -> Session:
         server_identity_key=server_identity_key,
         server_nonce_b64=server_nonce_b64,
         client_nonce_b64=client_nonce_b64,
+        client_identity_key=identity_key,
     )
     path = save_session(session)
     log.info(
@@ -166,6 +167,9 @@ def do_handshake(server_url: str) -> Session:
 def get_or_create_session(server_url: str, ttl: int = 3600) -> Session:
     """Load an existing session or create one via handshake.
 
+    Only a session opened by the wallet's current identity is reused; a
+    session another wallet opened with the same server is never returned.
+
     Args:
         server_url: Base URL of the server.
         ttl: Session TTL in seconds (default 1 hour).
@@ -174,7 +178,13 @@ def get_or_create_session(server_url: str, ttl: int = 3600) -> Session:
         Valid :class:`Session` object (either cached or freshly created).
     """
     server_url = server_url.rstrip("/")
-    session = load_session(server_url, ttl=ttl)
+    try:
+        identity_key = get_identity_key()
+    except MetaNetClientError as exc:
+        raise HandshakeError(
+            f"Cannot get identity key from MetaNet Client: {exc}"
+        ) from exc
+    session = load_session(server_url, ttl=ttl, client_identity_key=identity_key)
     if session is not None:
         log.debug("Reusing existing session for %s", server_url)
         return session
