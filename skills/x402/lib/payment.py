@@ -577,6 +577,9 @@ def paid_request(
         body=body,
     )
 
+    if response.status_code == 402 and response.signature_verdict != "signed":
+        return response  # Never create a payment from an unverified challenge.
+
     if response.status_code != 402:
         log.debug(
             "paid_request: initial request returned %d (not 402), done.",
@@ -682,6 +685,9 @@ def paid_request(
                     f"Paid request to {url} failed after {attempt} attempts: {e}"
                 ) from e
             continue
+
+        if response.signature_verdict != "signed":
+            return response
 
         if response.status_code == 402:
             # Server still wants payment -- maybe requirements changed.

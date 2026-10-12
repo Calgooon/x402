@@ -141,6 +141,16 @@ Every wallet call goes to `X402_WALLET_URL` (default `http://localhost:3321`). S
 
 BRC-31 sessions are cached in `~/.local/share/brc31-sessions/` as `SHA256(server_url + "\n" + client_identity_key)[:16].json`, and each file records the identity that opened it. A session is only reused by the wallet that opened it: when the wallet reports a different identity key, the helper handshakes afresh. Session files from versions before 1.1.1 (keyed by server URL only) are deleted on first use.
 
+Authenticated responses include a verdict column beside the HTTP status: `signed`, `UNSIGNED`, or `BAD SIGNATURE`. Both `auth` and `pay` verify BRC-104 response signatures with the session's server identity, request ID, status, signed headers, and raw body, including 400/402/500 refusals. Missing or invalid signatures print a warning and make the command exit nonzero. An unverified 402 never triggers payment.
+
+Both session entries report a clear error when no URL is supplied. To preview all cached session filenames without deleting anything or prompting:
+
+```sh
+python3 skills/x402/scripts/brc31_helpers.py session --clear-all --dry-run
+```
+
+Then `session --clear-all` lists the filenames and deletes all wallets' sessions without confirmation. The registry cache is preserved. These flags also work with `skills/x402/cli.py`.
+
 ## Changelog
 
 - **1.1.1** — Sessions keyed by (server URL, client identity key); a session opened by one wallet is never reused by another (a wallet switch on the same server previously made the server derive the BRC-29 payee key from the wrong identity). Wallet URL configurable via `X402_WALLET_URL`. `createAction` accepts `tx` returned as an index-keyed object. Added `tests/` (`python3 -m pytest -q`).

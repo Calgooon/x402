@@ -114,7 +114,7 @@ def print_response(resp, label: str = "Response"):
     """Print an HTTP response in a clean, readable format."""
     # Status line
     status_color = C.GREEN if resp.status_code < 400 else C.YELLOW if resp.status_code < 500 else C.RED
-    print(f"\n{C.BOLD}{label}:{C.RESET} {status_color}{resp.status_code} {resp.reason}{C.RESET}")
+    print(f"\n{C.BOLD}{label}:{C.RESET} {status_color}{resp.status_code} {getattr(resp, 'signature_verdict', 'UNSIGNED')} {resp.reason}{C.RESET}")
 
     # Auth headers (x-bsv-auth-*)
     auth_hdrs = {k: v for k, v in resp.headers.items() if k.lower().startswith("x-bsv-auth-")}
@@ -192,12 +192,24 @@ def cmd_session(args):
     """Show, clear, or clear-all stored sessions."""
     # --clear-all
     if args.clear_all:
+        from lib.session import list_session_files
+        files = list_session_files()
+        print(f"Sessions to clear: {len(files)}")
+        for path in files:
+            print(path.name)
+        if args.dry_run:
+            print("Dry run: no sessions deleted.")
+            return 0
         count = clear_all_sessions()
         if count == 0:
             print("No stored sessions to clear.")
         else:
             print(f"Cleared {count} stored session(s).")
         return 0
+
+    if args.dry_run:
+        print_err("--dry-run requires --clear-all.")
+        return 1
 
     # --clear <server_url>
     if args.clear:
@@ -301,7 +313,7 @@ def cmd_auth(args):
 
     # Return non-zero for server errors (5xx), but 0 for client errors (4xx)
     # since those are valid protocol responses (e.g. 402 Payment Required).
-    if resp.status_code >= 500:
+    if resp.status_code >= 500 or getattr(resp, "signature_verdict", "UNSIGNED") != "signed":
         return 1
     return 0
 
@@ -356,7 +368,7 @@ def cmd_pay(args):
 
     print_response(resp)
 
-    if resp.status_code >= 500:
+    if resp.status_code >= 500 or getattr(resp, "signature_verdict", "UNSIGNED") != "signed":
         return 1
     return 0
 
@@ -461,6 +473,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Clear all stored sessions.",
     )
+
+    p_sess.add_argument("--dry-run", action="store_true",
+                        help="List sessions for --clear-all without deleting them.")
 
     # --- auth ---
     p_auth = subparsers.add_parser(

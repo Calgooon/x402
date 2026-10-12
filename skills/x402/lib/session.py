@@ -170,14 +170,18 @@ def clear_session(server_url: str, client_identity_key: str | None = None) -> bo
     return deleted
 
 
+def list_session_files() -> list[Path]:
+    """List session filenames without exposing identities or session nonces."""
+    return sorted(f for f in SESSION_DIR.glob("*.json")
+                  if f.name not in _NON_SESSION_FILES)
+
+
 def clear_all_sessions() -> int:
     """Delete all stored sessions (every identity). Returns count deleted."""
     if not SESSION_DIR.exists():
         return 0
     count = 0
-    for f in SESSION_DIR.glob("*.json"):
-        if f.name in _NON_SESSION_FILES:
-            continue
+    for f in list_session_files():
         f.unlink()
         count += 1
     return count

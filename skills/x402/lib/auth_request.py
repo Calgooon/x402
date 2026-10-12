@@ -10,7 +10,8 @@ It orchestrates the full BRC-31 general message flow:
     5. Sign the serialized payload via MetaNet Client wallet
     6. Attach BRC-104 auth headers alongside original headers
     7. Send the HTTP request via ``requests`` library
-    8. Return the raw Response (caller handles 200, 402, etc.)
+    8. Verify the response signature and attach a signature_verdict
+    9. Return the Response (caller handles 200, 402, etc.)
 
 Reference implementations:
     - TS SDK: ``AuthFetch.fetch()`` + ``AuthFetch.serializeRequest()``
@@ -21,12 +22,14 @@ Reference implementations:
 from __future__ import annotations
 
 import logging
+import base64
+import sys
 import requests as _requests
 from urllib.parse import urlparse
 
-from lib.serialize import serialize_request
+from lib.serialize import serialize_request, serialize_response
 from lib.headers import filter_signable_headers, build_auth_headers
-from lib.metanet import get_identity_key, create_signature
+from lib.metanet import get_identity_key, create_signature, _call
 from lib.nonce import generate_nonce, generate_request_id, nonce_to_base64
 from lib.session import Session, clear_session
 from lib.handshake import get_or_create_session
@@ -48,6 +51,38 @@ class AuthRequestError(Exception):
     signing, wallet errors, etc.
     """
     pass
+
+
+def verify_response(response, session: Session, request_id_bytes: bytes) -> str:
+    """Verify the response payload against the session identity and request ID."""
+    h = {k.lower(): v for k, v in response.headers.items()}
+    if not h.get("x-bsv-auth-signature"):
+        return "UNSIGNED"
+    try:
+        if base64.b64decode(h["x-bsv-auth-request-id"], validate=True) != request_id_bytes:
+            return "BAD SIGNATURE"
+        if h["x-bsv-auth-identity-key"] != session.server_identity_key:
+            return "BAD SIGNATURE"
+        if h["x-bsv-auth-your-nonce"] != session.client_nonce_b64:
+            return "BAD SIGNATURE"
+        nonce = h["x-bsv-auth-nonce"]
+        if len(base64.b64decode(nonce, validate=True)) != 32:
+            return "BAD SIGNATURE"
+        signable = [(k, v) for k, v in filter_signable_headers(response.headers)
+                    if k != "content-type"]
+        payload = serialize_response(request_id_bytes, response.status_code,
+                                     signable, response.content or None)
+        result = _call("verifySignature", {
+            "data": list(payload),
+            "signature": list(bytes.fromhex(h["x-bsv-auth-signature"])),
+            "protocolID": AUTH_PROTOCOL,
+            "keyID": f"{nonce} {session.client_nonce_b64}",
+            "counterparty": session.server_identity_key,
+        })
+        return "signed" if result.get("valid") is True else "BAD SIGNATURE"
+    except Exception:
+        # Never expose wallet error payloads, keys, or auth metadata here.
+        return "BAD SIGNATURE"
 
 
 def authenticated_request(
@@ -242,6 +277,10 @@ def authenticated_request(
     # identical request (same body, same x-bsv-payment header if present), so
     # it never creates a new payment — it's safe to retry.
     # -----------------------------------------------------------------------
+    response.signature_verdict = verify_response(response, session, request_id_bytes)
+    if response.signature_verdict != "signed":
+        print(f"Response: {response.status_code} {response.signature_verdict}", file=sys.stderr)
+
     if response.status_code == 401 and _allow_session_refresh:
         log.info(
             "Got 401 from %s — clearing stale session and re-handshaking once.",

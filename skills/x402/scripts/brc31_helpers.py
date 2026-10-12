@@ -7,6 +7,8 @@ Usage:
   brc31_helpers.py discover <name_or_url>          Fetch /.well-known/x402-info manifest
   brc31_helpers.py handshake <server_url>          BRC-31 handshake
   brc31_helpers.py session <server_url>            Show stored session JSON
+  brc31_helpers.py session --clear-all --dry-run    List session files without deletion
+  brc31_helpers.py session --clear-all              List and clear all stored sessions
   brc31_helpers.py auth <METHOD> <url> [body]      Authenticated request
   brc31_helpers.py pay <METHOD> <url> [body]       Auth + payment request
   brc31_helpers.py upload <file> <server> [retention_min] [--public-base URL]
@@ -24,7 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib.handshake import do_handshake, get_or_create_session
 from lib.auth_request import authenticated_request
 from lib.payment import paid_request
-from lib.session import load_session
 from lib.metanet import get_identity_key
 from lib.upload import do_upload, DEFAULT_RETENTION_MINUTES
 from lib import registry
@@ -80,13 +81,9 @@ def main():
         print(json.dumps(session.to_dict(), indent=2))
 
     elif cmd == "session":
-        url = sys.argv[2]
-        session = load_session(url)
-        if session:
-            print(json.dumps(session.to_dict(), indent=2))
-        else:
-            print("null")
-            sys.exit(1)
+        from cli import build_parser, cmd_session
+        args = build_parser().parse_args(sys.argv[1:])
+        sys.exit(cmd_session(args))
 
     elif cmd == "auth":
         method = sys.argv[2].upper()
@@ -95,10 +92,13 @@ def main():
         resp = authenticated_request(method, url, body=body)
         result = {
             "status": resp.status_code,
+            "verdict": resp.signature_verdict,
             "headers": dict(resp.headers),
             "body": resp.text,
         }
         print(json.dumps(result, indent=2))
+        if resp.signature_verdict != "signed":
+            sys.exit(1)
 
     elif cmd == "pay":
         method = sys.argv[2].upper()
@@ -107,9 +107,13 @@ def main():
         resp = paid_request(method, url, body=body)
         result = {
             "status": resp.status_code,
+            "verdict": resp.signature_verdict,
             "headers": dict(resp.headers),
             "body": resp.text,
         }
+        if resp.signature_verdict != "signed":
+            print(json.dumps(result, indent=2))
+            sys.exit(1)
         # Parse response body once for auto-detection
         body_parsed = None
         try:
