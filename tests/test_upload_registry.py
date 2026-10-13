@@ -26,3 +26,23 @@ def test_upload_keeps_explicit_server_and_retention():
     args = cli.build_parser().parse_args(["upload", "report.txt", "https://other.example", "180"])
     assert args.server == "https://other.example"
     assert args.retention == 180
+
+
+def test_skill_helper_defaults_to_registry_storage(monkeypatch, capsys):
+    import importlib.util
+    import sys
+    from pathlib import Path
+    path = Path(__file__).parents[1] / "skills/x402/scripts/brc31_helpers.py"
+    spec = importlib.util.spec_from_file_location("storage_helper", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    calls = []
+    def upload(file_path, server, **kwargs):
+        calls.append((file_path, server, kwargs))
+        return {"status": "success"}
+    monkeypatch.setattr(module, "do_upload", upload)
+    monkeypatch.setattr(sys, "argv", ["helper", "upload", "report.txt"])
+    module.main()
+    assert calls == [("report.txt", "bsv-storage", {
+        "retention_minutes": 525600, "public_base": None,
+    })]

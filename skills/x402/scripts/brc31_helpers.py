@@ -11,7 +11,7 @@ Usage:
   brc31_helpers.py session --clear-all              List and clear all stored sessions
   brc31_helpers.py auth <METHOD> <url> [body]      Authenticated request
   brc31_helpers.py pay <METHOD> <url> [body]       Auth + payment request
-  brc31_helpers.py upload <file> <server> [retention_min] [--public-base URL]
+  brc31_helpers.py upload <file> [server] [retention_min] [--public-base URL]
                                                    UHRP file upload (pay /upload + PUT + public URL)
   brc31_helpers.py execute-action <json>           Execute a pending action template (broadcasts tx)
 """
@@ -27,7 +27,7 @@ from lib.handshake import do_handshake, get_or_create_session
 from lib.auth_request import authenticated_request
 from lib.payment import paid_request
 from lib.metanet import get_identity_key
-from lib.upload import do_upload, DEFAULT_RETENTION_MINUTES
+from lib.upload import do_upload, DEFAULT_RETENTION_MINUTES, DEFAULT_STORAGE_SERVER
 from lib import registry
 
 
@@ -157,19 +157,19 @@ def main():
         print(json.dumps(result, indent=2))
 
     elif cmd == "upload":
-        # upload <file> <server> [retention_min] [--public-base URL]
+        # upload <file> [server] [retention_min] [--public-base URL]
         rest = sys.argv[2:]
         public_base = None
         if "--public-base" in rest:
             i = rest.index("--public-base")
             public_base = rest[i + 1]
             del rest[i : i + 2]
-        if len(rest) < 2:
+        if len(rest) < 1:
             print(json.dumps({"error": "UsageError",
-                              "message": "upload <file> <server> [retention_min] [--public-base URL]"}))
+                              "message": "upload <file> [server] [retention_min] [--public-base URL]"}))
             sys.exit(1)
         file_path = rest[0]
-        server = rest[1]
+        server = rest[1] if len(rest) > 1 else DEFAULT_STORAGE_SERVER
         retention = int(rest[2]) if len(rest) > 2 else DEFAULT_RETENTION_MINUTES
         result = do_upload(file_path, server, retention_minutes=retention, public_base=public_base)
         print(json.dumps(result, indent=2))
