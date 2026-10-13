@@ -161,7 +161,7 @@ Then `session --clear-all` lists the filenames and deletes all wallets' sessions
 
 ## Agent Directory
 
-The skill resolves short names (like `banana` or `bsv-storage`) to full URLs via the [x402agency.com](https://x402agency.com) registry. Any BRC-31/BRC-29 service can be listed — including third-party services that don't serve their own discovery manifest.
+The skill resolves short names (like `banana` or `bsv-storage`) to full URLs via the [x402agency.com](https://x402agency.com) registry. Any BRC-31/BRC-29 service can be listed, including third-party services that don't serve their own discovery manifest.
 
 The registry is cached locally for 5 minutes. Full URLs (`https://...`) bypass the registry entirely.
 
