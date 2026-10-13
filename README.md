@@ -10,7 +10,7 @@ Say what you want. The skill handles the rest:
 /x402 generate an image of a mountain sunset
 /x402 transcribe this audio file
 /x402 search twitter for AI agent discussions
-/x402 upload this file to NanoStore for a year
+/x402 upload this file to bsv-storage for a year
 ```
 
 Under the hood:
@@ -31,9 +31,9 @@ The skill discovers agents from [x402agency.com/.well-known/agents](https://x402
 | **Whisper Agent** | Speech-to-text transcription (Whisper Large v3 Turbo) | ~$0.0006/min |
 | **X Research Agent** | Twitter/X search, profiles, threads, trending | ~$0.005–$0.06/req |
 | **1Sat Agent** | 1Sat Ordinals inscriptions (any file type) | 200–256,000 sats |
-| **NanoStore** | File hosting with UHRP content addressing (Babbage) | ~$0.0004/MB/yr |
+| **bsv-storage** | File hosting with UHRP content addressing (R2) | $0.05/GB-month; 1,000-sat minimum/upload |
 
-Third-party services like NanoStore are listed in the directory with hosted manifests — clients connect directly, no proxy.
+Our `bsv-storage` server uses Cloudflare R2 for bytes and on-chain UHRP advertisements; the registry hosts its discovery manifest, and the helper derives downloads on `files.x402agency.com` automatically.
 
 ## Install
 
@@ -58,7 +58,7 @@ The `/x402` command is the entry point. You can use it conversationally or with 
 ### Natural language
 ```
 /x402 generate a photo of a cat in a top hat
-/x402 upload report.pdf to NanoStore for 1 year
+/x402 upload report.pdf to bsv-storage for 1 year
 /x402 search twitter for "bitcoin scaling" from the last 24 hours
 /x402 transcribe meeting.wav
 ```
@@ -67,8 +67,8 @@ The `/x402` command is the entry point. You can use it conversationally or with 
 ```
 /x402 list                              # List all agents in the directory
 /x402 discover banana                   # Show endpoints, pricing, schemas for an agent
-/x402 discover nanostore                # Works for third-party services too
-/x402 auth GET nanostore/list           # Authenticated request (no payment)
+/x402 discover bsv-storage                # Registry-hosted storage discovery
+/x402 auth GET bsv-storage/list           # Authenticated request (no payment)
 /x402 pay POST banana/generate {"prompt":"a sunset"}  # Paid request
 ```
 
@@ -84,7 +84,7 @@ The `/x402` command is the entry point. You can use it conversationally or with 
 | `/x402 identity` | Show your wallet's identity key |
 | `/x402 session <url>` | Inspect a cached BRC-31 session |
 
-Agent names (`banana`, `nanostore`, `whisper`, etc.) resolve automatically. Full URLs work too.
+Agent names (`banana`, `bsv-storage`, `whisper`, etc.) resolve automatically. Full URLs work too.
 
 ## Examples
 
@@ -95,9 +95,13 @@ Agent names (`banana`, `nanostore`, `whisper`, etc.) resolve automatically. Full
 ```
 
 ### Upload a file
+
+The upload command defaults to `bsv-storage` at `storage.x402agency.com`.
+Storage costs $0.05 per GB-month with a 1,000-sat minimum per upload.
+
 ```
-/x402 upload report.pdf to NanoStore for 1 year
-→ discovers NanoStore, pays ~730 sats for 1MB/year, returns presigned upload URL
+/x402 upload report.pdf to bsv-storage for 1 year
+→ discovers bsv-storage, requests the exact quote (1,000-sat minimum), pays, PUTs the bytes, and verifies the public URL
 ```
 
 ### Search Twitter
@@ -157,7 +161,7 @@ Then `session --clear-all` lists the filenames and deletes all wallets' sessions
 
 ## Agent Directory
 
-The skill resolves short names (like `banana` or `nanostore`) to full URLs via the [x402agency.com](https://x402agency.com) registry. Any BRC-31/BRC-29 service can be listed — including third-party services that don't serve their own discovery manifest.
+The skill resolves short names (like `banana` or `bsv-storage`) to full URLs via the [x402agency.com](https://x402agency.com) registry. Any BRC-31/BRC-29 service can be listed — including third-party services that don't serve their own discovery manifest.
 
 The registry is cached locally for 5 minutes. Full URLs (`https://...`) bypass the registry entirely.
 

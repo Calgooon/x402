@@ -523,7 +523,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="UHRP file upload (pay /upload + PUT bytes + derive public URL).",
     )
     p_up.add_argument("file", help="Path to the file to upload.")
-    p_up.add_argument("server", help="UHRP server name (e.g. nanostore) or full URL.")
+    p_up.add_argument("server", nargs="?", default="bsv-storage",
+                      help="UHRP server registry name or full URL (default bsv-storage).")
     p_up.add_argument(
         "retention",
         nargs="?",

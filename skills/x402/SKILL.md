@@ -73,22 +73,22 @@ Handshake is automatic — never call it manually before `auth` or `pay`.
 
 ## File uploads (UHRP)
 
-For UHRP storage servers (`nanostore`, or a protocol-compatible port like
-`bsv-storage-cloudflare`), use the **`upload`** command. It does the whole
-two-step flow in one shot: pays `POST /upload` (BRC-29), PUTs the file bytes
-to the presigned storage URL with the required headers, derives the public
-URL, and verifies it serves.
+Use **`upload`** with the registry name `bsv-storage` (the default server).
+It pays `POST /upload` at `https://storage.x402agency.com`, PUTs the file bytes
+to the presigned R2 URL with required headers, and derives the public URL
+from the registry-hosted manifest at
+`https://x402agency.com/manifests/bsv-storage.json`. Downloads use
+`https://files.x402agency.com/cdn/{id}`. Pricing is $0.05 per GB-month with a
+1,000-sat minimum per upload to cover the overlay advertisement miner fee.
 
 ```bash
-# nanostore: public URL is auto-derived from the discovery manifest
-python3 ./scripts/brc31_helpers.py upload ./report.html nanostore 525600
-
-# R2-backed server: its S3 upload endpoint is NOT the public domain, so pass
-# the public base (the bucket's r2.dev URL or a custom domain)
-python3 ./scripts/brc31_helpers.py upload ./report.html \
-  https://bsv-storage-cloudflare.dev-a3e.workers.dev 525600 \
-  --public-base https://pub-XXXX.r2.dev
+python3 ./scripts/brc31_helpers.py upload ./report.html bsv-storage 525600
+# Default server and one-year retention:
+python3 ./scripts/brc31_helpers.py upload ./report.html
 ```
+
+For another protocol-compatible server without a public URL manifest, pass
+its full API URL and `--public-base https://your-public-files-domain`.
 
 - `retention_min` is the hosting duration in minutes (default `525600` = 1 year).
 - Content-Type is guessed from the file extension so the file renders in a browser.

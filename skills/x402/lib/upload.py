@@ -1,28 +1,10 @@
 """End-to-end UHRP file upload over BRC-31 auth + BRC-29 payment.
 
-UHRP storage servers (nanostore.babbage.systems and protocol-compatible
-ports such as bsv-storage-cloudflare) split a file upload into two steps:
-
-  1. POST /upload {fileSize, retentionPeriod}  -> paid (BRC-29). The server
-     replies with a *presigned* storage URL (GCS or R2 S3) plus the
-     ``requiredHeaders`` that must accompany the PUT. The server never
-     proxies the file bytes.
-  2. PUT the raw bytes directly to that presigned URL.
-
-The ``pay`` command only does step 1, so callers had to hand-roll the PUT
-and then guess the public URL. ``do_upload`` does the whole thing and
-returns the public, browsable URL.
-
-Works against any protocol-compatible UHRP server:
-
-* nanostore -> files served from a public GCS bucket; the public URL is the
-  presigned URL with its query stripped (and matches the discovery
-  manifest's ``publicUrlFormat``).
-* bsv-storage-cloudflare (R2) -> the presigned PUT goes to the R2 *S3 API*
-  endpoint (``<acct>.r2.cloudflarestorage.com``), which is NOT the public
-  domain. R2's public domain (an ``r2.dev`` URL or a custom domain) is
-  separate, so it can't be derived from the upload URL. Pass it with
-  ``public_base`` to get the browsable URL.
+The default server is ``bsv-storage``, resolved through the x402agency registry.
+POST /upload pays for a presigned R2 PUT URL; PUT sends the file bytes with
+all required headers. The registry-hosted manifest supplies the public files
+URL, separate from the R2 S3 endpoint. Protocol-compatible servers may use
+an explicit ``public_base`` override instead.
 """
 
 from __future__ import annotations
@@ -39,6 +21,7 @@ from lib.payment import paid_request
 
 # A year, in minutes (UHRP retention is expressed in minutes; 525600 = 365d).
 DEFAULT_RETENTION_MINUTES = 525_600
+DEFAULT_STORAGE_SERVER = "bsv-storage"
 
 
 class UploadError(Exception):
@@ -85,13 +68,16 @@ def _derive_public_url(
     # 1. Explicit override always wins.
     if public_base:
         return public_base.rstrip("/") + "/" + object_key
-    # 2. Discovery manifest's publicUrlFormat (nanostore advertises this).
+    # 2. Discovery manifest's publicUrlFormat (the registry advertises this).
     if manifest:
-        pattern = (manifest.get("publicUrlFormat") or {}).get("pattern")
-        if pattern and "{base58id}" in pattern:
-            return pattern.replace("{base58id}", object_key.rsplit("/", 1)[-1])
+        url_format = manifest.get("publicUrlFormat") or {}
+        pattern = url_format if isinstance(url_format, str) else url_format.get("pattern")
+        if pattern:
+            for placeholder in ("{id}", "{base58id}"):
+                if placeholder in pattern:
+                    return pattern.replace(placeholder, object_key.rsplit("/", 1)[-1])
     # 3. Strip the query off the presigned URL. Correct when the storage
-    #    endpoint IS the public domain (GCS public buckets / nanostore).
+    #    endpoint IS the public domain (public storage buckets).
     parsed = urllib.parse.urlparse(upload_url)
     if "r2.cloudflarestorage.com" in parsed.netloc:
         # R2's S3 API host is never public — caller must supply public_base.
@@ -101,14 +87,14 @@ def _derive_public_url(
 
 def do_upload(
     file_path: str,
-    server: str,
+    server: str = DEFAULT_STORAGE_SERVER,
     retention_minutes: int = DEFAULT_RETENTION_MINUTES,
     public_base: str | None = None,
     verify: bool = True,
 ) -> dict:
     """Upload ``file_path`` to a UHRP storage ``server`` and return its URL.
 
-    ``server`` may be a registry name (e.g. ``nanostore``) or a full URL.
+    ``server`` may be a registry name (e.g. ``bsv-storage``) or a full URL.
     Returns a dict with ``publicURL`` (or ``None`` + a ``note`` when it can't
     be derived), the ``objectKey``, sats paid, and a verify result.
     """
