@@ -1,6 +1,6 @@
 # x402
 
-Claude Code skill for BSV micropayments. Discover, authenticate, and pay AI services with Bitcoin SV — all from natural language.
+Claude Code skill for BSV micropayments. Discover, authenticate, and pay AI services with Bitcoin SV - all from natural language.
 
 ## What It Does
 
@@ -18,26 +18,38 @@ Under the hood:
 1. **Discovers** available services from the [x402agency.com](https://x402agency.com) agent directory
 2. **Authenticates** with [BRC-31](https://brc.dev/31) mutual auth (automatic handshake + session caching)
 3. **Pays** with [BRC-29](https://brc.dev/29) micropayments (automatic 402 handling, transaction creation)
-4. **Refunds** automatically — both service-failure refunds (a paid request fails) and excess refunds (you overpaid a token-priced agent) are detected and internalized to your wallet with no manual steps
+4. **Refunds** automatically - both service-failure refunds (a paid request fails) and excess refunds (you overpaid a token-priced agent) are detected and internalized to your wallet with no manual steps
 
 ## Available Services
 
 The skill discovers agents from [x402agency.com/.well-known/agents](https://x402agency.com/.well-known/agents):
 
-| Agent | What it does | Cost |
-|:------|:-------------|:-----|
-| **Banana Agent** | AI image generation (Google Nano Banana Pro) | ~$0.19/image |
-| **Veo Agent** | AI video generation with audio (Google Veo 3.1 Fast) | ~$0.75–$1.50/clip |
-| **Whisper Agent** | Speech-to-text transcription (Whisper Large v3 Turbo) | ~$0.0006/min |
-| **X Research Agent** | Twitter/X search, profiles, threads, trending | ~$0.005–$0.06/req |
-| **1Sat Agent** | 1Sat Ordinals inscriptions (any file type) | 200–256,000 sats |
-| **bsv-storage** | File hosting with UHRP content addressing (R2) | $0.05/GB-month; 1,000-sat minimum/upload |
+<!-- services:start -->
+| Agent | What it does | Price range | Delivery |
+|:------|:-------------|:------------|:---------|
+| Nano Banana 2.1 | New - launched 2026-10-06 · AI Image Generation with Search Grounding | $0.042-$0.14175 USD (per-resolution; 1K to 4K) | async |
+| Nano Banana 2 | AI Image Generation with Search Grounding | $0.08375-$0.18875 USD (per-resolution; 1K to 4K) | async |
+| Nano Banana Pro | AI Image Generation with Safety Controls | $0.1875-$0.375 USD (per-resolution; 1K to 4K) | async |
+| Veo Agent | AI Video Generation | $0.5-$1.5 USD (per-second; 4s silent to 8s + audio) | async |
+| Whisper Agent | Speech-to-Text | $0.0006375-$0.019125 USD (per-minute; 1 min to 30 min) | sync |
+| X Research Agent | Twitter/X Research API | $0.00625-$3.125 USD (per-resource; Counts: 1 page, mode recent to Search: limit 100, 5 pages (maximum)) | sync |
+| Kling Agent | AI Video Generation (Kling) | $0.175-$1.155 USD (per-second; v1 Standard 5s to v3 Standard 3s + audio + voice) | async |
+| 1Sat Agent | 1Sat Ordinals Inscriptions | $0.0001-$0.032 USD (per-byte (mining fee + 25%); 1 KB (200 sats min) to 500 KB max (64,000 sats)) | sync |
+| OpenAI Agent | AI Chat Completions (GPT-5.x) | $0.002079-$0.94035 USD (per-token; gpt-5-nano (4K out) to gpt-5.5-pro (4K out)) | sync |
+| Claude Agent | AI Chat Completions (Claude) | $0.02685-$0.2685 USD (per-token; claude-haiku-4-5 (4K out) to claude-fable-5 (4K out)) | sync |
+| PolyMirror Agent | Polymarket Whale Tracking | $0.005-$0.01 USD (per-request; /leaderboard to /trader) | sync |
+| BSV Storage | File Hosting (UHRP) | $0.0006083333333333333-$0.6083333333333334 USD (per-GB-month; 1 MB / 1 year (1,000-sat minimum) to 1 GB / 1 year (1,000-sat minimum)) | sync |
+| MessageBox | P2P Message Relay | $0 USD (recipient-controlled; Free delivery) | sync |
+| Web Reader Agent | URL → Clean Markdown | $0.003-$0.005 USD (per-request; Read URL to Web search) | sync |
+<!-- services:end -->
+
+Ranges use the minimum and maximum USD tier examples exactly as listed by the registry, with their labels and pricing model. They are not universal per-request quotes; use `discover` for endpoint pricing.
 
 Our `bsv-storage` server uses Cloudflare R2 for bytes and on-chain UHRP advertisements; the registry hosts its discovery manifest, and the helper derives downloads on `files.x402agency.com` automatically.
 
 ## Install
 
-Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [MetaNet Client](https://getmetanet.com).
+Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and either wallet path below.
 
 ```
 /plugin marketplace add calgooon/x402
@@ -48,8 +60,30 @@ Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [Meta
 
 ### Prerequisites
 
-- **MetaNet Client** running at `localhost:3321` (download from [getmetanet.com](https://getmetanet.com)), or any BRC-100 wallet at the URL in `X402_WALLET_URL`
-- **Python 3** with `requests` (`pip install requests`)
+Install **Python 3** with `requests` (`pip install requests`), then choose a wallet. Both paths speak BRC-100 over HTTP; the helper sends every wallet call to `X402_WALLET_URL`.
+
+1. **For a person: MetaNet Client.** Download [MetaNet Client](https://getmetanet.com) and run it at `localhost:3321`, the helper's default wallet URL.
+2. **For an agent with no human: bsv-wallet-cli.** Use the self-hosted headless daemon from the [public wallet README](https://github.com/Calhooon/bsv-wallet-cli#readme). Its current installation and inspection commands are:
+
+   ```sh
+   cargo install bsv-wallet-cli --version 0.7.4 --locked --root ./wallet-tools
+   ./wallet-tools/bin/bsv-wallet --help
+   ./wallet-tools/bin/bsv-wallet respend --help
+   ```
+
+   The wallet README names `daemon` for the monitor plus HTTP server and `serve` for the HTTP server alone. It directs readers to command help for arguments and to source for configuration defaults. It does not provide complete initialization/start commands, an identity command, funding commands, or the HTTP port. Follow that README and the installed command help to initialize, start, identify, and fund the wallet; those missing commands are not assumed here.
+
+   Once it is running, set the helper's URL to its configured loopback HTTP port, replacing `<its port>`:
+
+   ```sh
+   export X402_WALLET_URL="http://127.0.0.1:<its port>"
+   ```
+
+   Check the identity through the x402 helper:
+
+   ```sh
+   python3 skills/x402/scripts/brc31_helpers.py identity
+   ```
 
 ## Usage
 
@@ -77,7 +111,7 @@ The `/x402` command is the entry point. You can use it conversationally or with 
 | Command | What it does |
 |:--------|:-------------|
 | `/x402 list` | List all registered agents with capabilities and pricing |
-| `/x402 discover <agent>` | Fetch the x402-info manifest — endpoints, schemas, pricing, error codes |
+| `/x402 discover <agent>` | Fetch the x402-info manifest - endpoints, schemas, pricing, error codes |
 | `/x402 auth <METHOD> <agent/path>` | Make a BRC-31 authenticated request (no payment) |
 | `/x402 pay <METHOD> <agent/path> [body]` | Make an authenticated + paid request (auto-handles 402 flow, auto-internalizes refunds) |
 | `/x402 execute-action <json>` | Broadcast a pending action template (e.g. a 1Sat inscription) returned by `pay`, after you confirm |
@@ -137,7 +171,7 @@ Storage costs $0.05 per GB-month with a 1,000-sat minimum per upload.
   → skill presents result to user
 ```
 
-All payment is automatic — no confirmation prompts for typical micropayments (1–100,000 sats).
+All payment is automatic - no confirmation prompts for typical micropayments (1–100,000 sats).
 
 ## Wallet selection and sessions
 
@@ -155,9 +189,15 @@ python3 skills/x402/scripts/brc31_helpers.py session --clear-all --dry-run
 
 Then `session --clear-all` lists the filenames and deletes all wallets' sessions without confirmation. The registry cache is preserved. These flags also work with `skills/x402/cli.py`.
 
+## Development
+
+Run checks with `python3 -m pytest -q`. Regenerate the Available Services table from the live registry with `python3 scripts/gen_services.py`; do not edit the generated table by hand.
+
 ## Changelog
 
-- **1.1.1** — Sessions keyed by (server URL, client identity key); a session opened by one wallet is never reused by another (a wallet switch on the same server previously made the server derive the BRC-29 payee key from the wrong identity). Wallet URL configurable via `X402_WALLET_URL`. `createAction` accepts `tx` returned as an index-keyed object. Added `tests/` (`python3 -m pytest -q`).
+- **1.1.2** - Document the MetaNet Client and headless wallet paths, including gaps in the wallet README. Generate all service rows, exact registry tier ranges, and sync/async delivery from the public registry.
+
+- **1.1.1** - Sessions keyed by (server URL, client identity key); a session opened by one wallet is never reused by another (a wallet switch on the same server previously made the server derive the BRC-29 payee key from the wrong identity). Wallet URL configurable via `X402_WALLET_URL`. `createAction` accepts `tx` returned as an index-keyed object. Added `tests/` (`python3 -m pytest -q`).
 
 ## Agent Directory
 

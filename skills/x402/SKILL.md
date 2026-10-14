@@ -6,13 +6,18 @@ argument-hint: [URL or description of API to call]
 
 ## Prerequisites
 
-**MetaNet Client** must be running. Check with:
+Run a BRC-100 HTTP wallet: **MetaNet Client** for a person, or the headless
+**bsv-wallet-cli** daemon for an agent with no human. See the repository
+[README prerequisites](../../README.md#prerequisites) for installation and
+the wallet README's setup gaps. Set `X402_WALLET_URL` to the headless daemon's
+configured loopback URL. For MetaNet Client at the default URL, check with:
 ```bash
 curl -s -H "Origin: http://localhost" http://localhost:3321/isAuthenticated
 ```
-If not running, tell the user to start it (macOS: `/Applications/Metanet Client.app`, or download from https://getmetanet.com).
+If the selected wallet is not running, start that wallet. MetaNet Client is
+available from https://getmetanet.com; headless setup follows the public wallet README.
 
-**Choosing the wallet:** every wallet call (identity, signatures, `createAction`, `internalizeAction`, `upload`, `execute-action`) goes to `X402_WALLET_URL` (default `http://localhost:3321`). To pay from a second wallet daemon, prefix the command: `X402_WALLET_URL=http://localhost:3322 python3 ./scripts/brc31_helpers.py pay ...`. BRC-31 sessions are cached per (server, wallet identity key), so switching wallets always gets a fresh handshake for the new identity — never the other wallet's session.
+**Choosing the wallet:** every wallet call (identity, signatures, `createAction`, `internalizeAction`, `upload`, `execute-action`) goes to `X402_WALLET_URL` (default `http://localhost:3321`). To pay from a second wallet daemon, prefix the command: `X402_WALLET_URL=http://localhost:3322 python3 ./scripts/brc31_helpers.py pay ...`. BRC-31 sessions are cached per (server, wallet identity key), so switching wallets always gets a fresh handshake for the new identity - never the other wallet's session.
 
 ## Task
 
@@ -20,9 +25,9 @@ $ARGUMENTS
 
 ## Agent Registry
 
-A directory of available agents lives at `x402agency.com`. Run `list` to see all registered agents — their names, capabilities, and URLs. Agent names resolve automatically anywhere a URL is expected.
+A directory of available agents lives at `x402agency.com`. Run `list` to see all registered agents - their names, capabilities, and URLs. Agent names resolve automatically anywhere a URL is expected.
 
-**Always start with `list`** when the user's request could match any registered agent. Use the agent descriptions, capabilities, and taglines to match the user's natural language intent to the right agent. Don't assume which agent to use — check the registry.
+**Always start with `list`** when the user's request could match any registered agent. Use the agent descriptions, capabilities, and taglines to match the user's natural language intent to the right agent. Don't assume which agent to use - check the registry.
 
 The registry is cached locally for 5 minutes at `~/.local/share/brc31-sessions/registry.json`. Full URLs (`https://...`) still work directly and bypass the registry.
 
@@ -41,27 +46,27 @@ All operations use the helper script bundled with this skill. All commands outpu
 | `python3 ./scripts/brc31_helpers.py execute-action <json>` | Execute a pending action template (broadcasts inscription tx after user confirms) |
 | `python3 ./scripts/brc31_helpers.py session <base_url>` | Inspect the current wallet's cached session |
 
-Handshake is automatic — never call it manually before `auth` or `pay`.
+Handshake is automatic - never call it manually before `auth` or `pay`.
 
 ## Decision Tree
 
-1. **List** — Run `list` to see all registered agents. Match the user's intent to an agent by reading the name, tagline, and capabilities from the registry. There may be many agents — pick the best match.
+1. **List** - Run `list` to see all registered agents. Match the user's intent to an agent by reading the name, tagline, and capabilities from the registry. There may be many agents - pick the best match.
 
-2. **Discover** — Run `discover <agent_name>` on the matched agent to get its full manifest: endpoints, pricing, input schemas. Present a summary to yourself (or the user if they're exploring).
+2. **Discover** - Run `discover <agent_name>` on the matched agent to get its full manifest: endpoints, pricing, input schemas. Present a summary to yourself (or the user if they're exploring).
 
-3. **Route** — Match user intent to an endpoint:
+3. **Route** - Match user intent to an endpoint:
    - `auth: true`, no payment → use **`auth`**
-   - `payment` with satoshis → use **`pay`** (do NOT ask user to confirm — consent is implicit by invoking this skill; typical costs are 1-100 sats)
+   - `payment` with satoshis → use **`pay`** (do NOT ask user to confirm - consent is implicit by invoking this skill; typical costs are 1-100 sats)
    - `auth: false` → plain curl, no skill needed
 
-4. **Call** — Run the appropriate command. For requests with a JSON body, pass it as the 4th argument:
+4. **Call** - Run the appropriate command. For requests with a JSON body, pass it as the 4th argument:
    ```bash
    python3 ./scripts/brc31_helpers.py pay POST <agent_name>/<endpoint> '{"key":"value"}'
    ```
 
-5. **Present** — Parse the JSON response (`{status, headers, body}`). The `body` is a string that may contain nested JSON — parse it before presenting.
+5. **Present** - Parse the JSON response (`{status, headers, body}`). The `body` is a string that may contain nested JSON - parse it before presenting.
 
-6. **Action** — If the `pay` response contains `pending_action` (e.g. from 1sat-agent),
+6. **Action** - If the `pay` response contains `pending_action` (e.g. from 1sat-agent),
    present the cost breakdown to the user and ask for confirmation before calling
    `execute-action`. Do NOT broadcast automatically. The `pending_action` includes
    costs (service fee, estimated mining fee, estimated total) and the action template.
@@ -136,7 +141,7 @@ python3 ./scripts/brc31_helpers.py pay POST "https://some-server.example.com/pai
 
 ## Refunds
 
-Servers that support BRC-29 refunds will automatically return refund data when a paid request fails after payment. The client **auto-detects and internalizes refunds** — no manual action needed.
+Servers that support BRC-29 refunds will automatically return refund data when a paid request fails after payment. The client **auto-detects and internalizes refunds** - no manual action needed.
 
 - **Inline refunds**: Returned in the same response as the error (e.g., `/paid` fails immediately)
 - **Deferred refunds**: Returned later when polling `/status/{id}` for async operations that failed
@@ -147,7 +152,7 @@ The `discover` command shows which endpoints support refunds. The `pay` command 
 
 Payment is sent via `x-bsv-payment` header as JSON: `{"derivationPrefix":"...","derivationSuffix":"...","transaction":"<base64 BEEF>"}`. The client handles this automatically.
 
-**Transport:** Payment normally rides in the `x-bsv-payment` header. For payments larger than 8KB, the client uses BRC-105 multipart/form-data transport **when the server advertises it** (`x-bsv-payment-transports: multipart` on the 402); otherwise it keeps the payment in the header. Typical payments are ~2KB — well under the threshold — so header transport is what's used in practice. (No live x402agency.com agent currently advertises multipart.)
+**Transport:** Payment normally rides in the `x-bsv-payment` header. For payments larger than 8KB, the client uses BRC-105 multipart/form-data transport **when the server advertises it** (`x-bsv-payment-transports: multipart` on the 402); otherwise it keeps the payment in the header. Typical payments are ~2KB - well under the threshold - so header transport is what's used in practice. (No live x402agency.com agent currently advertises multipart.)
 
 ## Default Test Server
 
@@ -158,7 +163,7 @@ Payment is sent via `x-bsv-payment` header as JSON: `{"derivationPrefix":"...","
 
 - Regular HTTP APIs without BSV authentication
 - APIs using OAuth, API keys, or JWT (unless specifically BRC-31)
-- Coinbase x402 protocol (EVM/Solana only — this skill is BSV-only)
+- Coinbase x402 protocol (EVM/Solana only - this skill is BSV-only)
 
 ## Troubleshooting
 
@@ -170,7 +175,7 @@ Only consult this section if something goes wrong.
 | Discovery returns 404 | Server may not have `/.well-known/x402-info`; proceed with known endpoint info or ask user |
 | Connection error | Server may be down or wallet not running |
 | Payment error | Tell user to check MetaNet Client for approval prompt; may also be insufficient funds |
-| HTTP 401 | Handled automatically — the client clears the stale session, re-handshakes, and retries once. If a 401 still surfaces, the server genuinely rejected auth (not a stale session). |
+| HTTP 401 | Handled automatically - the client clears the stale session, re-handshakes, and retries once. If a 401 still surfaces, the server genuinely rejected auth (not a stale session). |
 | `Signature is not valid` on POST | Session may be stale. Clear: `python3 ./cli.py session --clear <server_url>` |
 | Persistent auth failures | Clear session: `python3 ./cli.py session --clear <server_url>` |
 | Need verbose output | Use full CLI: `python3 ./cli.py -v auth POST "<url>"` |
