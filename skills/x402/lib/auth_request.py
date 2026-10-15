@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import base64
 import sys
+import time
 import requests as _requests
 from urllib.parse import urlparse
 
@@ -92,6 +93,8 @@ def authenticated_request(
     body: bytes | str | None = None,
     session: Session | None = None,
     _allow_session_refresh: bool = True,
+    timeout: float = 300,
+    _deadline: float | None = None,
 ) -> _requests.Response:
     """Make an authenticated BRC-31 request.
 
@@ -256,13 +259,18 @@ def authenticated_request(
     # -----------------------------------------------------------------------
     # 10. Send the HTTP request
     # -----------------------------------------------------------------------
+    if _deadline is not None:
+        remaining = _deadline - time.time()
+        if remaining <= 0:
+            raise AuthRequestError("Payment quote window expired before send.")
+        timeout = min(timeout, remaining)
     try:
         response = _requests.request(
             method=method.upper(),
             url=url,
             headers=merged_headers,
             data=body_bytes,
-            timeout=300,
+            timeout=timeout,
         )
     except _requests.RequestException as e:
         raise AuthRequestError(f"HTTP request failed: {e}") from e
@@ -296,6 +304,7 @@ def authenticated_request(
             headers=headers,
             body=body,
             session=None,                 # force get_or_create_session -> handshake
+            timeout=timeout,
             _allow_session_refresh=False,  # only retry once; avoid loops
         )
 

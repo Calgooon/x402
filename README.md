@@ -173,6 +173,10 @@ Storage costs $0.05 per GB-month with a 1,000-sat minimum per upload.
 
 All payment is automatic - no confirmation prompts for typical micropayments (1–100,000 sats).
 
+## Refunds
+
+If a paid response is lost, the helper retries the identical payment up to three times after 2, 5, and 10 seconds, within the quote's five-minute window. It never pays twice for that quote. Before sending, it saves the payment and request in `~/.x402/pending/<txid>.json`; unresolved calls report the txid and an exact `retry-payment` command to replay that file with the same wallet. Signed already-claimed refusals stop retries, and signed success or an imported refund removes the file. Expired files remain available for recovery but the helper will not send them beyond the quote window.
+
 ## Wallet selection and sessions
 
 Every wallet call goes to `X402_WALLET_URL` (default `http://localhost:3321`). Set it to use a second wallet daemon, e.g. `X402_WALLET_URL=http://localhost:3322`.
@@ -194,6 +198,8 @@ Then `session --clear-all` lists the filenames and deletes all wallets' sessions
 Run checks with `python3 -m pytest -q`. Regenerate the Available Services table from the live registry with `python3 scripts/gen_services.py`; do not edit the generated table by hand.
 
 ## Changelog
+
+- **1.1.3** - Retry identical payments after lost responses without paying twice. Save pending requests by txid and provide a `retry-payment` recovery command.
 
 - **1.1.2** - Document the MetaNet Client and headless wallet paths, including gaps in the wallet README. Generate all service rows, exact registry tier ranges, and sync/async delivery from the public registry.
 

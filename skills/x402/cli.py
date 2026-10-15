@@ -19,7 +19,7 @@ from lib import registry
 
 # payment.py may not exist yet (built in parallel); import conditionally.
 try:
-    from lib.payment import paid_request, PaymentError, PaymentRequired
+    from lib.payment import paid_request, retry_payment, PaymentError, PaymentRequired
     HAS_PAYMENT = True
 except ImportError:
     HAS_PAYMENT = False
@@ -373,6 +373,17 @@ def cmd_pay(args):
     return 0
 
 
+def cmd_retry_payment(args):
+    """Replay a saved payment without creating a new transaction."""
+    try:
+        response = retry_payment(args.file)
+    except (PaymentError, OSError, ValueError) as exc:
+        print_err(str(exc))
+        return 1
+    print_response(response)
+    return int(response.status_code >= 400 or response.signature_verdict != "signed")
+
+
 def cmd_upload(args):
     """End-to-end UHRP file upload: pay /upload, PUT bytes, print public URL."""
     from lib.upload import do_upload, UploadError
@@ -517,6 +528,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Request body (JSON string). Optional.",
     )
 
+    p_retry = subparsers.add_parser("retry-payment", help="Replay a saved payment.")
+    p_retry.add_argument("file", help="Saved payment JSON file.")
+
     # --- upload ---
     p_up = subparsers.add_parser(
         "upload",
@@ -575,6 +589,7 @@ def main() -> int:
         "session": cmd_session,
         "auth": cmd_auth,
         "pay": cmd_pay,
+        "retry-payment": cmd_retry_payment,
         "upload": cmd_upload,
     }
 
