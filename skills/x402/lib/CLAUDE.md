@@ -56,7 +56,8 @@ def paid_request(
 ) -> requests.Response
 ```
 - **Purpose:** High-level entry point for paid endpoints. Makes an authenticated request, and if the server returns 402, automatically constructs and submits a BRC-29 payment, then retries.
-- **Flow:** `authenticated_request()` → if 402: parse payment headers → `create_payment()` → retry with `x-bsv-payment` header → repeat up to `max_payment_attempts`
+- **Flow:** `authenticated_request()` → if 402: parse payment headers → `create_payment()` → retry with `x-bsv-payment` header → retry identical payment up to `max_payment_attempts` times (2, 5, 10 seconds, within five minutes)
+- **Recovery:** Save request and payment before sending in `~/.x402/pending/<txid>.json`; `retry-payment <file>` replays it with the original wallet and never creates a payment. Signed success or an imported refund removes the file.
 - **Payment transport:** If payment JSON exceeds 8KB (`MULTIPART_THRESHOLD`) **and** the server advertises multipart support (`x-bsv-payment-transports: multipart`), sends payment (+ any original body) as BRC-105 multipart/form-data; otherwise sends payment JSON in the `x-bsv-payment` header. Typical payments (~2KB) use the header.
 
 ### do_handshake (handshake.py)

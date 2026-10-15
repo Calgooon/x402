@@ -29,10 +29,15 @@ import base64
 import hashlib
 import logging
 import requests
+import time
+import shlex
+import sys
+import tempfile
+from pathlib import Path
+from email.utils import parsedate_to_datetime
 
 from lib.metanet import get_public_key, create_action
 from lib.auth_request import authenticated_request
-from lib.session import Session
 from lib.handshake import get_or_create_session
 
 log = logging.getLogger(__name__)
@@ -48,8 +53,18 @@ PAYMENT_PROTOCOL = [2, "3241645161d8"]
 # BRC-29 payment protocol version.  Must match server expectation.
 PAYMENT_VERSION = "1.0"
 
-# Maximum number of payment retry attempts before giving up.
+# Maximum number of retries after the first paid send.
 MAX_PAYMENT_ATTEMPTS = 3
+PAYMENT_BACKOFF = (2, 5, 10)
+QUOTE_WINDOW = 300
+PENDING_DIR = Path.home() / ".x402" / "pending"
+
+
+class Payment(dict):
+    """Wire payment fields with local-only transaction metadata."""
+
+    txid: str
+
 
 # Threshold for switching from header to multipart payment transport.
 # When payment JSON exceeds this, we send it as a multipart/form-data body
@@ -455,11 +470,12 @@ def create_payment(
 
     # Step 6: Build the payment JSON (camelCase keys to match server expectation).
     # NOTE: no senderIdentityKey -- identity comes from BRC-31 auth context.
-    payment = {
+    payment = Payment({
         "derivationPrefix": derivation_prefix,
         "derivationSuffix": derivation_suffix,
         "transaction": tx_b64,
-    }
+    })
+    payment.txid = txid
 
     log.debug(
         "Payment JSON: prefix=%s..., suffix=%s, tx_b64_len=%d",
@@ -526,6 +542,116 @@ def build_multipart_body(
 # ---------------------------------------------------------------------------
 
 
+def _retry_command(path: Path) -> str:
+    helper = Path(__file__).resolve().parents[1] / "scripts" / "brc31_helpers.py"
+    return shlex.join([sys.executable, str(helper), "retry-payment", str(path)])
+
+
+def _save_pending(record: dict) -> Path:
+    """Persist payment bytes and request before sending, readable only by the payer."""
+    path = PENDING_DIR / (record["txid"] + ".json")
+    fd, temporary = tempfile.mkstemp(dir=PENDING_DIR, prefix=".payment-")
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(record, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    return path
+
+
+def _unresolved(record: dict, path: Path, reason: str) -> PaymentError:
+    message = (f"Payment {record['txid']}: {reason}. Saved payment: {path}. "
+               f"Retry the same payment by hand: {_retry_command(path)}")
+    log.error(message)
+    return PaymentError(message)
+
+
+def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Response:
+    """Re-sign the same payment and body, without ever asking for another quote."""
+    body = base64.b64decode(record["body"]) if record["body"] is not None else None
+    last_error = "quote window expired"
+    retry_after = None
+    for attempt in range(min(max(0, max_retries), len(PAYMENT_BACKOFF)) + 1):
+        if attempt:
+            delay = retry_after if retry_after is not None else PAYMENT_BACKOFF[attempt - 1]
+            retry_after = None
+            if time.time() + delay >= record["expires_at"]:
+                break
+            time.sleep(delay)
+        remaining = record["expires_at"] - time.time()
+        if remaining <= 0:
+            break
+        try:
+            response = authenticated_request(
+                method=record["method"], url=record["url"],
+                headers=dict(record["headers"]), body=body,
+                _allow_session_refresh=False, timeout=min(300, remaining),
+                _deadline=record["expires_at"],
+            )
+        except Exception as exc:
+            # The wallet has already broadcast. Local signing failures must
+            # also retain the journal and can never restart payment creation.
+            last_error = f"paid request failed ({type(exc).__name__})"
+            continue
+        if not response.content or getattr(response, "signature_verdict", None) != "signed":
+            last_error = "paid response missing a body or verified BRC-104 signature"
+            continue
+        # Only a verified response can establish a terminal payment outcome.
+        text = response.text.lower().replace("_", " ").replace("-", " ")
+        if 400 <= response.status_code < 500 and any(
+            name in text for name in ("already claimed", "payment replayed")
+        ):
+            raise _unresolved(record, path,
+                "already claimed; the service was delivered to the first request or will be refunded")
+        if response.status_code == 202:
+            last_error = "payment outcome still pending"
+            try:
+                retry_after = max(0, int(response.headers.get("Retry-After", "5")))
+            except ValueError:
+                retry_after = 5
+            continue
+        # Keep a journal when a refund cannot be imported, so it can be recovered.
+        from lib.refund import parse_refund, process_refund
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None  # A signed non-JSON service response is valid.
+        refund = parse_refund(parsed) if isinstance(parsed, dict) else None
+        if refund:
+            try:
+                result = process_refund(refund)
+                if not result.get("accepted", False):
+                    raise PaymentError("Wallet did not accept refund")
+                response.refund_result = {
+                    "processed": True, "accepted": True,
+                    "satoshis": refund.satoshis, "txid": refund.txid,
+                }
+            except Exception as exc:
+                raise _unresolved(record, path, "refund internalization failed") from exc
+        if response.status_code < 400 or refund:
+            path.unlink(missing_ok=True)
+        else:
+            log.warning("Payment %s returned signed HTTP %s; saved at %s. "
+                        "Retry the same payment by hand: %s",
+                        record["txid"], response.status_code, path, _retry_command(path))
+        return response
+    raise _unresolved(record, path, f"identical-payment retries exhausted: {last_error}")
+
+
+def retry_payment(path: str | Path) -> requests.Response:
+    """Replay a saved request using the original wallet, without making a payment."""
+    from lib.metanet import get_identity_key
+    path = Path(path).expanduser()
+    record = json.loads(path.read_text())
+    if record["identity_key"] != get_identity_key():
+        raise PaymentError("Use the wallet identity that created this payment to retry it.")
+    return _send_pending(record, path, MAX_PAYMENT_ATTEMPTS)
+
+
 def paid_request(
     method: str,
     url: str,
@@ -533,209 +659,61 @@ def paid_request(
     body: bytes | str | None = None,
     max_payment_attempts: int = MAX_PAYMENT_ATTEMPTS,
 ) -> requests.Response:
-    """Make a BRC-31 authenticated request, handling 402 payment automatically.
+    """Pay a verified quote once; retry the identical payment at most three times.
 
-    This is the main entry point for interacting with paid endpoints.
-    It orchestrates the full flow:
-
-        1. Make an authenticated request via ``authenticated_request()``.
-        2. If the server returns 402, parse the payment requirements.
-        3. Create a payment transaction.
-        4. Retry the original request with the ``x-bsv-payment`` header.
-        5. Return the final response.
-
-    The payment is only created on a 402 response.  If the initial request
-    succeeds (or fails with a non-402 status), it is returned as-is.
-
-    Args:
-        method:    HTTP method (GET, POST, etc.).
-        url:       Full URL to request.
-        headers:   Optional headers (same restrictions as ``authenticated_request``).
-        body:      Optional request body (str or bytes).
-        max_payment_attempts: Maximum times to attempt payment (default 3).
-
-    Returns:
-        ``requests.Response`` from the final attempt.
-
-    Raises:
-        PaymentError: if payment construction/submission fails after all attempts.
-        lib.auth_request.AuthRequestError: if the authenticated request itself
-            fails at the protocol level.
+    ``max_payment_attempts`` limits retries after the first paid send. All sends
+    must begin within five minutes of receiving the quote (or the server's
+    earlier Date). Failures before payment creation propagate without paid retries.
     """
-    if headers is None:
-        headers = {}
-
-    # Keep a copy of original headers so retries don't accumulate payment headers.
-    original_headers = dict(headers)
-
-    # --- Step 1: Initial authenticated request ---
-    log.info("paid_request: %s %s", method, url)
-    response = authenticated_request(
-        method=method,
-        url=url,
-        headers=dict(original_headers),
-        body=body,
-    )
-
-    if response.status_code == 402 and response.signature_verdict != "signed":
-        return response  # Never create a payment from an unverified challenge.
-
-    if response.status_code != 402:
-        log.debug(
-            "paid_request: initial request returned %d (not 402), done.",
-            response.status_code,
-        )
-        return response
-
-    # --- Step 2: Handle 402 Payment Required ---
-    log.info(
-        "paid_request: got 402 Payment Required (attempt 0/%d)",
-        max_payment_attempts,
-    )
-
-    # We need the server identity key from the session for key derivation.
-    # Re-derive the server base URL to look up the session.
     from urllib.parse import urlparse
-    parsed = urlparse(url)
-    server_base = f"{parsed.scheme}://{parsed.netloc}"
 
-    session = get_or_create_session(server_base)
-    server_identity_key = session.server_identity_key
-
-    # Also check if the 402 response has the identity key in headers
-    # (it should, since the 402 is a signed response from an authenticated session).
-    header_identity = response.headers.get("x-bsv-auth-identity-key")
-    if header_identity:
-        server_identity_key = header_identity
-
-    for attempt in range(1, max_payment_attempts + 1):
-        log.info(
-            "paid_request: payment attempt %d/%d",
-            attempt,
-            max_payment_attempts,
-        )
-
-        try:
-            # Parse 402 requirements (re-parse each time in case server changes them)
-            payment_req = parse_402_response(response)
-        except PaymentError as e:
-            log.error("Failed to parse 402 response: %s", e)
-            raise
-
-        try:
-            # Create payment
-            payment = create_payment(
-                derivation_prefix=payment_req.derivation_prefix,
-                server_identity_key=server_identity_key,
-                satoshis=payment_req.satoshis,
-                server_url=server_base,
-            )
-        except PaymentError as e:
-            log.error(
-                "Payment creation failed (attempt %d/%d): %s",
-                attempt, max_payment_attempts, e,
-            )
-            if attempt >= max_payment_attempts:
-                raise
-            continue
-
-        # Build the payment header value
-        payment_json = json.dumps(payment, separators=(",", ":"))
-
-        # Determine transport: header (small) vs multipart (large).
-        # BRC-105 multipart transport wraps both the payment JSON and
-        # original body into multipart/form-data parts — works with or
-        # without an original body.
-        retry_headers = dict(original_headers)
-
-        if len(payment_json) > MULTIPART_THRESHOLD and payment_req.supports_multipart():
-            # BRC-105 multipart transport
-            log.info(
-                "Payment JSON %d bytes > %d threshold, using multipart transport",
-                len(payment_json),
-                MULTIPART_THRESHOLD,
-            )
-            original_ct = original_headers.get("content-type")
-            multipart_body, multipart_ct = build_multipart_body(
-                payment_json, body, original_ct,
-            )
-            retry_headers.pop("content-type", None)
-            retry_headers["content-type"] = multipart_ct
-            retry_body = multipart_body
-        else:
-            # Standard header transport
-            retry_headers["x-bsv-payment"] = payment_json
-            retry_body = body
-
-        # Retry with payment
-        try:
-            response = authenticated_request(
-                method=method,
-                url=url,
-                headers=retry_headers,
-                body=retry_body,
-            )
-        except Exception as e:
-            log.error(
-                "Paid request failed (attempt %d/%d): %s",
-                attempt, max_payment_attempts, e,
-            )
-            if attempt >= max_payment_attempts:
-                raise PaymentError(
-                    f"Paid request to {url} failed after {attempt} attempts: {e}"
-                ) from e
-            continue
-
-        if response.signature_verdict != "signed":
-            return response
-
-        if response.status_code == 402:
-            # Server still wants payment -- maybe requirements changed.
-            log.warning(
-                "Server returned 402 again after payment (attempt %d/%d). "
-                "Will retry if attempts remain.",
-                attempt, max_payment_attempts,
-            )
-            if attempt >= max_payment_attempts:
-                raise PaymentError(
-                    f"Paid request to {url} still getting 402 after "
-                    f"{attempt} payment attempts. Last response: "
-                    f"{response.text[:500]}"
-                )
-            continue
-
-        # Success (or at least not 402 anymore)
-        log.info(
-            "paid_request: payment accepted! status=%d (attempt %d/%d)",
-            response.status_code, attempt, max_payment_attempts,
-        )
-
-        # Auto-detect and internalize refunds in any response.
-        # Async agents (banana, veo, kling) return 200 on /status polls
-        # with refund data for failed predictions — must check all responses.
-        try:
-            from lib.refund import parse_refund, process_refund
-            resp_body = response.json()
-            refund = parse_refund(resp_body)
-            if refund:
-                try:
-                    refund_result = process_refund(refund)
-                    log.info(
-                        "Refund auto-internalized: %d sats, accepted=%s",
-                        refund.satoshis,
-                        refund_result.get("accepted", False),
-                    )
-                except Exception as re:
-                    log.error("Failed to internalize refund: %s", re)
-        except Exception:
-            pass  # Response not JSON or no refund — that's fine
-
+    headers = {k.lower(): v for k, v in (headers or {}).items()}
+    response = authenticated_request(method=method, url=url, headers=dict(headers), body=body)
+    quote_time = time.time()
+    if response.status_code != 402 or response.signature_verdict != "signed":
         return response
-
-    # Should not reach here, but just in case
-    raise PaymentError(
-        f"Paid request to {url} exhausted all {max_payment_attempts} attempts."
-    )
+    payment_req = parse_402_response(response)
+    if response.headers.get("Date"):
+        try:
+            quote_time = min(quote_time, parsedate_to_datetime(response.headers["Date"]).timestamp())
+        except (ValueError, TypeError, OverflowError):
+            pass
+    expires_at = quote_time + QUOTE_WINDOW
+    parsed_url = urlparse(url)
+    server_base = f"{parsed_url.scheme}://{parsed_url.netloc}"
+    session = get_or_create_session(server_base)
+    PENDING_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if time.time() >= expires_at:
+        raise PaymentError("Quote expired before payment creation; no payment created.")
+    payment = create_payment(payment_req.derivation_prefix, session.server_identity_key,
+                             payment_req.satoshis, server_base)
+    payment_json = json.dumps(payment, separators=(",", ":"))
+    # Normalize once, then preserve exactly these bytes for every send and replay.
+    if isinstance(body, str):
+        try:
+            body = json.dumps(json.loads(body), separators=(",", ":"))
+        except ValueError:
+            pass
+        body = body.encode("utf-8")
+    original_body = body
+    if body is not None:
+        headers.setdefault("content-type", "application/json")
+    if len(payment_json) > MULTIPART_THRESHOLD and payment_req.supports_multipart():
+        body, headers["content-type"] = build_multipart_body(
+            payment_json, body, headers.get("content-type"))
+    else:
+        headers["x-bsv-payment"] = payment_json
+    record = {
+        "txid": payment.txid, "payment": payment, "url": url, "method": method,
+        "identity_key": session.client_identity_key, "expires_at": expires_at,
+        "headers": headers, "body": base64.b64encode(body).decode("ascii") if body is not None else None,
+        "body_sha256": hashlib.sha256(original_body or b"").hexdigest(),
+    }
+    try:
+        path = _save_pending(record)
+    except OSError as exc:
+        raise PaymentError(f"Payment {payment.txid}: could not save recovery file: {exc}") from exc
+    return _send_pending(record, path, max_payment_attempts)
 
 
 # ---------------------------------------------------------------------------
