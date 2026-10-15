@@ -12,6 +12,7 @@ Usage:
   brc31_helpers.py auth <METHOD> <url> [body]      Authenticated request
   brc31_helpers.py pay <METHOD> <url> [body]       Auth + payment request
   brc31_helpers.py retry-payment <saved-file>      Replay the identical saved payment
+  brc31_helpers.py import-refund <saved-file>      Import a saved refund without resending
   brc31_helpers.py upload <file> [server] [retention_min] [--public-base URL]
                                                    UHRP file upload (pay /upload + PUT + public URL)
   brc31_helpers.py execute-action <json>           Execute a pending action template (broadcasts tx)
@@ -26,7 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib.handshake import do_handshake, get_or_create_session
 from lib.auth_request import authenticated_request
-from lib.payment import paid_request, retry_payment
+from lib.payment import paid_request, retry_payment, import_refund
 from lib.metanet import get_identity_key
 from lib.upload import do_upload, DEFAULT_RETENTION_MINUTES, DEFAULT_STORAGE_SERVER
 from lib import registry
@@ -107,6 +108,9 @@ def main():
         print(json.dumps(result, indent=2))
         if resp.signature_verdict != "signed":
             sys.exit(1)
+
+    elif cmd == "import-refund":
+        print(json.dumps(import_refund(sys.argv[2]), indent=2))
 
     elif cmd in ("pay", "retry-payment"):
         if cmd == "retry-payment":

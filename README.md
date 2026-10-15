@@ -175,7 +175,7 @@ All payment is automatic - no confirmation prompts for typical micropayments (1â
 
 ## Refunds
 
-If a paid response is lost, the helper retries the identical payment up to three times after 2, 5, and 10 seconds, within the quote's five-minute window. It never pays twice for that quote. Before sending, it saves the payment and request in `~/.x402/pending/<txid>.json`; unresolved calls report the txid and an exact `retry-payment` command to replay that file with the same wallet. Signed already-claimed refusals stop retries, and signed success or an imported refund removes the file. Expired files remain available for recovery but the helper will not send them beyond the quote window.
+If a paid response is lost, the helper retries the identical payment up to three times after 2, 5, and 10 seconds. Each send must start within the quote's five-minute window; a started request retains its full 300-second response timeout so slow work can finish. It never pays twice for that quote. Before sending, it saves the payment and request in `~/.x402/pending/<txid>.json`. Unresolved calls report the txid and an exact `retry-payment` command while the window remains open. Signed `ERR_PAYMENT_REPLAYED` and `ERR_QUOTE_EXPIRED` refusals stop retries, report that the first request was served or will be refunded, and remove the retryable file. Expired unresolved files remain for the operator, without an unusable retry command. A signed success or imported refund removes the file. If refund import fails, the response is returned and saved in the pending file, with an `import-refund` command to recover the refund without resending the payment.
 
 ## Wallet selection and sessions
 
@@ -199,7 +199,7 @@ Run checks with `python3 -m pytest -q`. Regenerate the Available Services table 
 
 ## Changelog
 
-- **1.1.3** - Retry identical payments after lost responses without paying twice. Save pending requests by txid and provide a `retry-payment` recovery command.
+- **1.1.3** - Retry identical payments after lost responses without paying twice. Save pending requests by txid and provide a `retry-payment` recovery command. Stop on signed replay or expired-quote codes, and report unsigned or signed paid 402 refusals with the txid. Bound send starts by the quote window while retaining the 300-second response timeout and one session refresh. Preserve delivered responses and refund bytes on import failure, with an `import-refund` command. Normalize the body once before quoting, tolerate stale server clocks beyond 60 seconds, suppress expired retry commands, and print payment JSON if the initial recovery-file write fails.
 
 - **1.1.2** - Document the MetaNet Client and headless wallet paths, including gaps in the wallet README. Generate all service rows, exact registry tier ranges, and sync/async delivery from the public registry.
 
