@@ -41,6 +41,7 @@ All operations use the helper script bundled with this skill. All commands outpu
 | `python3 ./scripts/brc31_helpers.py discover <name_or_url>` | Learn server endpoints, auth requirements, costs |
 | `python3 ./scripts/brc31_helpers.py auth <METHOD> <name_or_url> [body]` | Authenticated request (no payment) |
 | `python3 ./scripts/brc31_helpers.py pay <METHOD> <name_or_url> [body]` | Authenticated + paid request (auto-handles 402) |
+| `python3 ./scripts/brc31_helpers.py retry-payment <saved-file>` | Replay a saved payment with the original wallet |
 | `python3 ./scripts/brc31_helpers.py upload <file> <name_or_url> [retention_min] [--public-base URL]` | UHRP file upload: pays `/upload`, PUTs the bytes, returns the public URL |
 | `python3 ./scripts/brc31_helpers.py identity` | Get wallet's 66-char hex identity key |
 | `python3 ./scripts/brc31_helpers.py execute-action <json>` | Execute a pending action template (broadcasts inscription tx after user confirms) |
@@ -147,6 +148,8 @@ Servers that support BRC-29 refunds will automatically return refund data when a
 - **Deferred refunds**: Returned later when polling `/status/{id}` for async operations that failed
 
 The `discover` command shows which endpoints support refunds. The `pay` command output includes a `refund` block when a refund was received and internalized.
+
+If a paid response is lost, the helper retries the identical payment after 2, 5, and 10 seconds, within the quote's five-minute window. It never creates another payment for that quote. Unresolved calls retain `~/.x402/pending/<txid>.json` and print the txid and an exact `retry-payment` command. Use that command with the original wallet instead of starting another `pay` call. Signed already-claimed refusals stop retries; expired files are retained but are not sent beyond the quote window.
 
 ## Payment Transport
 
