@@ -111,8 +111,8 @@ def test_lost_response_then_signed_success(server, monkeypatch, multipart):
     assert list(payment.PENDING_DIR.iterdir()) == []
 
 
-@pytest.mark.parametrize("code", ["ERR_PAYMENT_REPLAYED", "ERR_QUOTE_EXPIRED"])
-def test_lost_then_already_claimed(server, code):
+def test_lost_then_already_claimed(server):
+    code = "ERR_PAYMENT_REPLAYED"
     outcomes, actions, calls, sleeps, _, _ = server
     outcomes.extend([requests.Timeout("lost"), (400, {"code": code}, True)])
     with pytest.raises(payment.PaymentError) as exc:
@@ -122,6 +122,29 @@ def test_lost_then_already_claimed(server, code):
     assert len(actions) == 1 and len(calls) == 3 and sleeps == [2]
     assert not (payment.PENDING_DIR / f"{TXID}.json").exists()
     assert "retry-payment" not in str(exc.value)
+
+
+def test_lost_then_quote_expired_unclaimed(server, caplog):
+    outcomes, actions, calls, sleeps, now, _ = server
+    outcomes.extend([requests.Timeout("lost"),
+                     (400, {"code": "ERR_QUOTE_EXPIRED", "message": "quote gone"}, True)])
+    with pytest.raises(payment.PaymentError) as exc:
+        payment.paid_request("POST", URL)
+    path = payment.PENDING_DIR / f"{TXID}.json"
+    saved = json.loads(path.read_text())
+    assert saved["state"] == "expired-unclaimed"
+    assert saved["terminal_at"] == now[0]
+    assert saved["server_code"] == "ERR_QUOTE_EXPIRED"
+    assert saved["server_message"] == "quote gone"
+    for words in ("the quote expired", "the server may not have claimed this payment",
+                  "the sats are yours if no service was delivered", "keep this file",
+                  "refund path or a later receipt query", "import-refund"):
+        assert words in str(exc.value) and words in caplog.text
+    assert "retry-payment" not in str(exc.value)
+    assert len(actions) == 1 and len(calls) == 3 and sleeps == [2]
+    with pytest.raises(payment.PaymentError, match="keep this file"):
+        payment.retry_payment(path)
+    assert len(calls) == 3
 
 
 @pytest.mark.parametrize("outcome", [requests.ConnectionError("lost"), requests.Timeout("lost"),
@@ -333,9 +356,13 @@ def test_first_send_or_hand_retry_quote_expired_is_terminal(server, hand_retry):
             payment.retry_payment(path)
         else:
             payment.paid_request("POST", URL)
-    assert "will be refunded" in str(exc.value)
+    assert "the server may not have claimed this payment" in str(exc.value)
     assert "retry-payment" not in str(exc.value)
-    assert len(actions) == 1 and not path.exists()
+    assert len(actions) == 1 and path.exists()
+    saved = json.loads(path.read_text())
+    assert saved["state"] == "expired-unclaimed"
+    assert saved["server_code"] == "ERR_QUOTE_EXPIRED"
+    assert saved["server_message"] == "fresh quote"
 
 
 def test_error_message_text_does_not_establish_replay(server):
@@ -382,7 +409,7 @@ def test_paid_session_refresh_preserves_deadline(server, monkeypatch, expired):
         with pytest.raises(payment.PaymentError) as exc:
             payment.paid_request("POST", URL)
         assert "retry-payment" not in str(exc.value)
-        assert "will be refunded" in str(exc.value)
+        assert "the server may not have claimed this payment" in str(exc.value)
         assert len(calls) == 2
     else:
         assert payment.paid_request("POST", URL).status_code == 200
@@ -437,4 +464,21 @@ def test_refund_save_failure_returns_response_and_prints_recovery(server, monkey
     assert response.json() == body and response.refund_result["processed"] is False
     saved = json.loads(capsys.readouterr().err.split("Recovery JSON: ")[1])
     assert json.loads(base64.b64decode(saved["response"]["body"])) == body
+    assert len(actions) == 1 and len(calls) == 2
+
+
+@pytest.mark.parametrize("status, code", [(201, None), (400, "ERR_INVALID_PAYMENT"),
+                                         (500, "ERR_PAYMENT_FAILED")])
+def test_unconfirmed_response_keeps_terminal_record(server, status, code):
+    outcomes, actions, calls, _, now, _ = server
+    outcomes.append((status, {"code": code, "message": "unconfirmed"}, True))
+    assert payment.paid_request("POST", URL).status_code == status
+    path = payment.PENDING_DIR / f"{TXID}.json"
+    saved = json.loads(path.read_text())
+    assert saved["state"] == "terminal-unresolved"
+    assert saved["terminal_at"] == now[0]
+    assert saved["server_code"] == code
+    assert saved["server_message"] == "unconfirmed"
+    with pytest.raises(payment.PaymentError, match="keep this file"):
+        payment.retry_payment(path)
     assert len(actions) == 1 and len(calls) == 2
