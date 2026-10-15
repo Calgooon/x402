@@ -563,12 +563,29 @@ def _save_pending(record: dict, path: Path | None = None) -> Path:
     return path
 
 
+def _expired_unclaimed(record: dict, path: Path, code=None, server_message=None) -> PaymentError:
+    message = (
+        "the quote expired; the server may not have claimed this payment; "
+        "the sats are yours if no service was delivered: keep this file; "
+        "recover with the server operator using this saved payment and the refund path "
+        "or a later receipt query; import returned refund data with import-refund."
+    )
+    record.update(state="expired-unclaimed", terminal_at=time.time(),
+                  server_code=code, server_message=server_message,
+                  recovery_message=message)
+    _save_pending(record, path)
+    error = PaymentError(f"Payment {record['txid']}: {message} Saved payment: {path}.")
+    log.error("%s", error)
+    return error
+
+
 def _unresolved(record: dict, path: Path, reason: str) -> PaymentError:
     message = f"Payment {record['txid']}: {reason}. Saved payment: {path}. "
     if time.time() >= record["expires_at"]:
-        message += ("Quote window closed; the Worker will not accept it; keep the file "
-                    "and the txid for the operator. The service was delivered to the "
-                    "first request or will be refunded.")
+        return _expired_unclaimed(record, path, record.get("server_code"),
+                                  record.get("server_message"))
+    elif record.get("state") == "terminal-unresolved":
+        message += record["recovery_message"]
     else:
         message += f"Retry the same payment by hand: {_recovery_command(path, 'retry-payment')}"
     log.error(message)
@@ -629,13 +646,15 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
                 raise _unresolved(record, path, "paid request returned HTTP 402; no new payment created")
             last_error = "paid response missing a body or verified BRC-104 signature"
             continue
-        # Only verified error codes establish a terminal payment outcome.
+        # Only verified claim codes can establish a claimed payment outcome.
         try:
             parsed = response.json()
         except ValueError:
             parsed = None
         code = parsed.get("code") if isinstance(parsed, dict) else None
-        if 400 <= response.status_code < 500 and code in ("ERR_PAYMENT_REPLAYED", "ERR_QUOTE_EXPIRED"):
+        if 400 <= response.status_code < 500 and code == "ERR_QUOTE_EXPIRED":
+            raise _expired_unclaimed(record, path, code, parsed.get("message", parsed.get("description")))
+        if 400 <= response.status_code < 500 and code == "ERR_PAYMENT_REPLAYED":
             path.unlink(missing_ok=True)
             raise PaymentError(
                 f"Payment {record['txid']}: already claimed; the service was delivered "
@@ -682,9 +701,16 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
                 log.error("Payment %s: %s. Saved response: %s. Import by hand: %s",
                           record["txid"], error, path, command)
                 return response
-        if response.status_code < 400 or refund:
+        if response.status_code == 200 or refund:
             path.unlink(missing_ok=True)
         else:
+            record.update(state="terminal-unresolved", terminal_at=time.time(),
+                          recovery_message="The server did not confirm delivery or refund; keep this file "
+                          "and contact the server operator for recovery through the refund path or a later receipt query.",
+                          server_code=code,
+                          server_message=parsed.get("message", parsed.get("description"))
+                          if isinstance(parsed, dict) else None)
+            _save_pending(record, path)
             _unresolved(record, path, f"returned signed HTTP {response.status_code}")
         return response
     raise _unresolved(record, path, f"identical-payment retries exhausted: {last_error}")
@@ -697,6 +723,9 @@ def retry_payment(path: str | Path) -> requests.Response:
     record = json.loads(path.read_text())
     if record["identity_key"] != get_identity_key():
         raise PaymentError("Use the wallet identity that created this payment to retry it.")
+    if record.get("state") in ("expired-unclaimed", "terminal-unresolved"):
+        raise PaymentError(
+            f"Payment {record['txid']}: {record['recovery_message']} Saved payment: {path}.")
     if "response" in record:
         raise PaymentError(
             f"Payment {record['txid']}: response already saved at {path}; "
