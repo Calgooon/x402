@@ -42,6 +42,7 @@ All operations use the helper script bundled with this skill. All commands outpu
 | `python3 ./scripts/brc31_helpers.py auth <METHOD> <name_or_url> [body]` | Authenticated request (no payment) |
 | `python3 ./scripts/brc31_helpers.py pay <METHOD> <name_or_url> [body]` | Authenticated + paid request (auto-handles 402) |
 | `python3 ./scripts/brc31_helpers.py retry-payment <saved-file>` | Replay a saved payment with the original wallet |
+| `python3 ./scripts/brc31_helpers.py import-refund <saved-file>` | Import a saved refund without resending the payment |
 | `python3 ./scripts/brc31_helpers.py upload <file> <name_or_url> [retention_min] [--public-base URL]` | UHRP file upload: pays `/upload`, PUTs the bytes, returns the public URL |
 | `python3 ./scripts/brc31_helpers.py identity` | Get wallet's 66-char hex identity key |
 | `python3 ./scripts/brc31_helpers.py execute-action <json>` | Execute a pending action template (broadcasts inscription tx after user confirms) |
@@ -149,7 +150,7 @@ Servers that support BRC-29 refunds will automatically return refund data when a
 
 The `discover` command shows which endpoints support refunds. The `pay` command output includes a `refund` block when a refund was received and internalized.
 
-If a paid response is lost, the helper retries the identical payment after 2, 5, and 10 seconds, within the quote's five-minute window. It never creates another payment for that quote. Unresolved calls retain `~/.x402/pending/<txid>.json` and print the txid and an exact `retry-payment` command. Use that command with the original wallet instead of starting another `pay` call. Signed already-claimed refusals stop retries; expired files are retained but are not sent beyond the quote window.
+If a paid response is lost, the helper retries the identical payment after 2, 5, and 10 seconds. Sends must start within the quote's five-minute window; each started request retains its 300-second response timeout. It never creates another payment for that quote. Unresolved calls retain `~/.x402/pending/<txid>.json` and print the txid and an exact `retry-payment` command while the window remains open. Use that command with the original wallet instead of starting another `pay` call. Signed replay and expired-quote error codes stop retries and remove the retryable file; the first request was served or will be refunded. Expired unresolved files are retained for the operator without a retry command. Failed refund imports preserve and return the delivered response and print an `import-refund` command; use it with the original wallet to import the saved refund without resending the payment.
 
 ## Payment Transport
 

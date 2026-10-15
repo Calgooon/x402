@@ -111,15 +111,17 @@ def test_lost_response_then_signed_success(server, monkeypatch, multipart):
     assert list(payment.PENDING_DIR.iterdir()) == []
 
 
-def test_lost_then_already_claimed(server):
+@pytest.mark.parametrize("code", ["ERR_PAYMENT_REPLAYED", "ERR_QUOTE_EXPIRED"])
+def test_lost_then_already_claimed(server, code):
     outcomes, actions, calls, sleeps, _, _ = server
-    outcomes.extend([requests.Timeout("lost"), (400, {"code": "ERR_PAYMENT_REPLAYED"}, True)])
+    outcomes.extend([requests.Timeout("lost"), (400, {"code": code}, True)])
     with pytest.raises(payment.PaymentError) as exc:
         payment.paid_request("POST", URL)
     assert TXID in str(exc.value)
     assert "already claimed; the service was delivered to the first request or will be refunded" in str(exc.value)
     assert len(actions) == 1 and len(calls) == 3 and sleeps == [2]
-    assert (payment.PENDING_DIR / f"{TXID}.json").exists()
+    assert not (payment.PENDING_DIR / f"{TXID}.json").exists()
+    assert "retry-payment" not in str(exc.value)
 
 
 @pytest.mark.parametrize("outcome", [requests.ConnectionError("lost"), requests.Timeout("lost"),
@@ -198,11 +200,12 @@ def test_signed_refund_internalized_once(server, monkeypatch):
     assert not (payment.PENDING_DIR / f"{TXID}.json").exists()
 
 
-def test_paid_402_never_creates_second_payment(server):
+@pytest.mark.parametrize("signed", [True, False])
+def test_paid_402_never_creates_second_payment(server, signed):
     outcomes, actions, calls, sleeps, _, _ = server
-    outcomes.append((402, {"payment": "required"}, True))
-    response = payment.paid_request("POST", URL)
-    assert response.status_code == 402
+    outcomes.append((402, {"payment": "required"}, signed))
+    with pytest.raises(payment.PaymentError, match=TXID):
+        payment.paid_request("POST", URL)
     assert len(actions) == 1 and len(calls) == 2 and sleeps == []
     assert (payment.PENDING_DIR / f"{TXID}.json").exists()
 
@@ -233,12 +236,17 @@ def test_recovery_requires_original_wallet(server, monkeypatch):
     assert len(actions) == 1 and len(calls) == 5
 
 
-def test_server_date_bounds_quote(server):
+@pytest.mark.parametrize("offset, expected", [(-1000, 1300), (-61, 1300), (-60, 1240), (-30, 1270), (0, 1300), (60, 1300)])
+def test_server_date_bounds_quote(server, offset, expected):
+    from email.utils import formatdate
     outcomes, actions, calls, _, _, quote_headers = server
-    quote_headers["Date"] = "Thu, 01 Jan 1970 00:00:00 GMT"
-    with pytest.raises(payment.PaymentError, match="expired before payment"):
+    quote_headers["Date"] = formatdate(1000 + offset, usegmt=True)
+    outcomes.extend([requests.Timeout("lost")] * 4)
+    with pytest.raises(payment.PaymentError):
         payment.paid_request("POST", URL)
-    assert actions == [] and len(calls) == 1
+    record = json.loads((payment.PENDING_DIR / f"{TXID}.json").read_text())
+    assert record["expires_at"] == expected
+    assert len(actions) == 1
 
 
 def test_helper_does_not_import_refund_twice(server, monkeypatch, capsys):
@@ -256,16 +264,40 @@ def test_helper_does_not_import_refund_twice(server, monkeypatch, capsys):
     assert len(imports) == 1
 
 
-def test_failed_refund_keeps_journal(server, monkeypatch):
+@pytest.mark.parametrize("field", ["refund", "excessRefund"])
+@pytest.mark.parametrize("failure", ["rejected", "exception"])
+def test_failed_refund_preserves_response_and_manual_import(server, monkeypatch, capsys, field, failure):
     from lib import refund
-    outcomes, _, _, _, _, _ = server
-    outcomes.append((200, {"refund": {
+    outcomes, actions, calls, _, _, _ = server
+    body = {"answer": "delivered result", field: {
         "transaction": "AQID", "derivationPrefix": "refund-prefix", "derivationSuffix": "refund-suffix",
-        "senderIdentityKey": SERVER_KEY, "satoshis": 5, "txid": "34" * 32}}, True))
-    monkeypatch.setattr(refund, "process_refund", lambda info: {"accepted": False})
-    with pytest.raises(payment.PaymentError, match="refund internalization failed"):
-        payment.paid_request("POST", URL)
-    assert (payment.PENDING_DIR / f"{TXID}.json").exists()
+        "senderIdentityKey": SERVER_KEY, "satoshis": 5, "txid": "34" * 32}}
+    outcomes.append((200, body, True))
+    def fail(info):
+        if failure == "exception":
+            raise RuntimeError("wallet unavailable")
+        return {"accepted": False}
+    monkeypatch.setattr(refund, "process_refund", fail)
+    response = payment.paid_request("POST", URL)
+    assert response.json() == body
+    assert response.refund_result["processed"] is False
+    path = payment.PENDING_DIR / f"{TXID}.json"
+    saved = json.loads(path.read_text())
+    assert base64.b64decode(saved["response"]["body"]) == response.content
+    assert path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(payment.PaymentError, match="response already saved"):
+        payment.retry_payment(path)
+    imports = []
+    monkeypatch.setattr(refund, "process_refund", lambda info: imports.append(info) or {"accepted": True})
+    argv = shlex.split(response.refund_result["command"])
+    assert argv[2:] == ["import-refund", str(path)]
+    monkeypatch.setattr(sys, "argv", argv[1:])
+    helper().main()
+    assert json.loads(capsys.readouterr().out)["accepted"] is True
+    assert payment.import_refund(path)["already_imported"] is True
+    assert len(imports) == 1 and imports[0].transaction == body[field]["transaction"]
+    assert json.loads(path.read_text())["refund_imported"] is True
+    assert len(actions) == 1 and len(calls) == 2
 
 
 def test_pending_receipt_reuses_payment(server):
@@ -285,3 +317,124 @@ def test_wallet_action_failure_does_not_send_payment(server, monkeypatch):
         payment.paid_request("POST", URL)
     assert len(calls) == 1 and actions == [] and sleeps == []
     assert list(payment.PENDING_DIR.iterdir()) == []
+
+
+@pytest.mark.parametrize("hand_retry", [False, True])
+def test_first_send_or_hand_retry_quote_expired_is_terminal(server, hand_retry):
+    outcomes, actions, calls, _, _, _ = server
+    path = payment.PENDING_DIR / f"{TXID}.json"
+    if hand_retry:
+        outcomes.extend([requests.Timeout("lost")] * 4)
+        with pytest.raises(payment.PaymentError):
+            payment.paid_request("POST", URL)
+    outcomes.append((400, {"code": "ERR_QUOTE_EXPIRED", "message": "fresh quote"}, True))
+    with pytest.raises(payment.PaymentError, match=TXID) as exc:
+        if hand_retry:
+            payment.retry_payment(path)
+        else:
+            payment.paid_request("POST", URL)
+    assert "will be refunded" in str(exc.value)
+    assert "retry-payment" not in str(exc.value)
+    assert len(actions) == 1 and not path.exists()
+
+
+def test_error_message_text_does_not_establish_replay(server):
+    outcomes, actions, _, _, _, _ = server
+    outcomes.append((400, {"code": "OTHER", "message": "already claimed payment replayed ERR_QUOTE_EXPIRED"}, True))
+    assert payment.paid_request("POST", URL).status_code == 400
+    assert len(actions) == 1
+    assert (payment.PENDING_DIR / f"{TXID}.json").exists()
+
+
+def test_slow_paid_response_keeps_full_read_timeout(server, monkeypatch):
+    outcomes, actions, calls, _, now, _ = server
+    original_create = payment.create_payment
+    def slow_create(*args):
+        result = original_create(*args)
+        now[0] += 250
+        return result
+    monkeypatch.setattr(payment, "create_payment", slow_create)
+    original_request = requests.request
+    def slow_response(**kwargs):
+        response = original_request(**kwargs)
+        if len(calls) == 2:
+            assert kwargs["timeout"] == 300
+            now[0] += 240
+        return response
+    monkeypatch.setattr(requests, "request", slow_response)
+    outcomes.append((200, {"answer": "slow result"}, True))
+    assert payment.paid_request("POST", URL).json()["answer"] == "slow result"
+    assert len(actions) == 1 and len(calls) == 2
+    assert now[0] > 1300
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_paid_session_refresh_preserves_deadline(server, monkeypatch, expired):
+    outcomes, actions, calls, _, now, _ = server
+    outcomes.extend([(401, {"code": "SESSION_EXPIRED"}, True), (200, {"ok": True}, True)])
+    original = auth_request.clear_session
+    def refresh(*args, **kwargs):
+        original(*args, **kwargs)
+        if expired:
+            now[0] += 301
+    monkeypatch.setattr(auth_request, "clear_session", refresh)
+    if expired:
+        with pytest.raises(payment.PaymentError) as exc:
+            payment.paid_request("POST", URL)
+        assert "retry-payment" not in str(exc.value)
+        assert "will be refunded" in str(exc.value)
+        assert len(calls) == 2
+    else:
+        assert payment.paid_request("POST", URL).status_code == 200
+        assert calls[1][1] == calls[2][1]
+        assert calls[1][0]["x-bsv-payment"] == calls[2][0]["x-bsv-payment"]
+    assert len(actions) == 1
+
+
+@pytest.mark.parametrize("multipart", [False, True])
+def test_quoted_and_paid_body_bytes_match(server, monkeypatch, multipart):
+    outcomes, _, calls, _, _, _ = server
+    if multipart:
+        monkeypatch.setattr(payment, "MULTIPART_THRESHOLD", 1)
+    outcomes.append((200, {"ok": True}, True))
+    payment.paid_request("POST", URL, body=' { "input": "hello" } ')
+    assert calls[0][1] == b'{"input":"hello"}'
+    assert calls[0][0]["content-type"] == "application/json"
+    if multipart:
+        assert b"Content-Type: application/json\r\n\r\n" + calls[0][1] + b"\r\n" in calls[1][1]
+    else:
+        assert calls[0][1] == calls[1][1]
+        assert calls[0][0]["content-type"] == calls[1][0]["content-type"]
+
+
+def test_pending_write_failure_prints_payment_json(server, monkeypatch, capsys):
+    _, actions, calls, _, _, _ = server
+    def fail(record):
+        raise OSError("disk full")
+    monkeypatch.setattr(payment, "_save_pending", fail)
+    with pytest.raises(payment.PaymentError, match=TXID):
+        payment.paid_request("POST", URL)
+    payment_json = capsys.readouterr().err.split("recovery JSON: ")[1]
+    assert json.loads(payment_json)["transaction"] == "AQID"
+    assert len(actions) == 1 and len(calls) == 1
+
+
+def test_refund_save_failure_returns_response_and_prints_recovery(server, monkeypatch, capsys):
+    from lib import refund
+    outcomes, actions, calls, _, _, _ = server
+    body = {"answer": "delivered", "excessRefund": {
+        "transaction": "AQID", "derivationPrefix": "refund-prefix", "derivationSuffix": "refund-suffix",
+        "senderIdentityKey": SERVER_KEY, "satoshis": 5, "txid": "34" * 32}}
+    outcomes.append((200, body, True))
+    monkeypatch.setattr(refund, "process_refund", lambda info: {"accepted": False})
+    save = payment._save_pending
+    def fail_response_save(record, path=None):
+        if "response" in record:
+            raise OSError("disk full")
+        return save(record, path)
+    monkeypatch.setattr(payment, "_save_pending", fail_response_save)
+    response = payment.paid_request("POST", URL)
+    assert response.json() == body and response.refund_result["processed"] is False
+    saved = json.loads(capsys.readouterr().err.split("Recovery JSON: ")[1])
+    assert json.loads(base64.b64decode(saved["response"]["body"])) == body
+    assert len(actions) == 1 and len(calls) == 2

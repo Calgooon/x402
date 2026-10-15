@@ -263,7 +263,6 @@ def authenticated_request(
         remaining = _deadline - time.time()
         if remaining <= 0:
             raise AuthRequestError("Payment quote window expired before send.")
-        timeout = min(timeout, remaining)
     try:
         response = _requests.request(
             method=method.upper(),
@@ -305,6 +304,7 @@ def authenticated_request(
             body=body,
             session=None,                 # force get_or_create_session -> handshake
             timeout=timeout,
+            _deadline=_deadline,
             _allow_session_refresh=False,  # only retry once; avoid loops
         )
 

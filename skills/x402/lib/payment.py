@@ -542,15 +542,15 @@ def build_multipart_body(
 # ---------------------------------------------------------------------------
 
 
-def _retry_command(path: Path) -> str:
+def _recovery_command(path: Path, command: str) -> str:
     helper = Path(__file__).resolve().parents[1] / "scripts" / "brc31_helpers.py"
-    return shlex.join([sys.executable, str(helper), "retry-payment", str(path)])
+    return shlex.join([sys.executable, str(helper), command, str(path)])
 
 
-def _save_pending(record: dict) -> Path:
+def _save_pending(record: dict, path: Path | None = None) -> Path:
     """Persist payment bytes and request before sending, readable only by the payer."""
-    path = PENDING_DIR / (record["txid"] + ".json")
-    fd, temporary = tempfile.mkstemp(dir=PENDING_DIR, prefix=".payment-")
+    path = path or PENDING_DIR / (record["txid"] + ".json")
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".payment-")
     try:
         with os.fdopen(fd, "w") as stream:
             json.dump(record, stream)
@@ -564,10 +564,37 @@ def _save_pending(record: dict) -> Path:
 
 
 def _unresolved(record: dict, path: Path, reason: str) -> PaymentError:
-    message = (f"Payment {record['txid']}: {reason}. Saved payment: {path}. "
-               f"Retry the same payment by hand: {_retry_command(path)}")
+    message = f"Payment {record['txid']}: {reason}. Saved payment: {path}. "
+    if time.time() >= record["expires_at"]:
+        message += ("Quote window closed; the Worker will not accept it; keep the file "
+                    "and the txid for the operator. The service was delivered to the "
+                    "first request or will be refunded.")
+    else:
+        message += f"Retry the same payment by hand: {_recovery_command(path, 'retry-payment')}"
     log.error(message)
     return PaymentError(message)
+
+
+def import_refund(path: str | Path) -> dict:
+    """Import a saved response's refund without sending another paid request."""
+    from lib.metanet import get_identity_key
+    from lib.refund import parse_refund, process_refund
+    path = Path(path).expanduser()
+    record = json.loads(path.read_text())
+    if record["identity_key"] != get_identity_key():
+        raise PaymentError("Use the wallet identity that created this payment to import its refund.")
+    if record.get("refund_imported"):
+        return {"accepted": True, "already_imported": True}
+    refund = parse_refund(json.loads(base64.b64decode(record["response"]["body"])))
+    if refund is None:
+        raise PaymentError("Saved response has no importable refund.")
+    result = process_refund(refund)
+    if not result.get("accepted", False):
+        raise PaymentError("Wallet did not accept refund; saved response retained.")
+    # Preserve the delivered response after import, but mark it as complete.
+    record["refund_imported"] = True
+    _save_pending(record, path)
+    return result
 
 
 def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Response:
@@ -589,7 +616,7 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
             response = authenticated_request(
                 method=record["method"], url=record["url"],
                 headers=dict(record["headers"]), body=body,
-                _allow_session_refresh=False, timeout=min(300, remaining),
+                timeout=300,
                 _deadline=record["expires_at"],
             )
         except Exception as exc:
@@ -598,15 +625,23 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
             last_error = f"paid request failed ({type(exc).__name__})"
             continue
         if not response.content or getattr(response, "signature_verdict", None) != "signed":
+            if response.status_code == 402:
+                raise _unresolved(record, path, "paid request returned HTTP 402; no new payment created")
             last_error = "paid response missing a body or verified BRC-104 signature"
             continue
-        # Only a verified response can establish a terminal payment outcome.
-        text = response.text.lower().replace("_", " ").replace("-", " ")
-        if 400 <= response.status_code < 500 and any(
-            name in text for name in ("already claimed", "payment replayed")
-        ):
-            raise _unresolved(record, path,
-                "already claimed; the service was delivered to the first request or will be refunded")
+        # Only verified error codes establish a terminal payment outcome.
+        try:
+            parsed = response.json()
+        except ValueError:
+            parsed = None
+        code = parsed.get("code") if isinstance(parsed, dict) else None
+        if 400 <= response.status_code < 500 and code in ("ERR_PAYMENT_REPLAYED", "ERR_QUOTE_EXPIRED"):
+            path.unlink(missing_ok=True)
+            raise PaymentError(
+                f"Payment {record['txid']}: already claimed; the service was delivered "
+                "to the first request or will be refunded. No payment remains to retry.")
+        if response.status_code == 402:
+            raise _unresolved(record, path, "paid request returned HTTP 402; no new payment created")
         if response.status_code == 202:
             last_error = "payment outcome still pending"
             try:
@@ -616,10 +651,6 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
             continue
         # Keep a journal when a refund cannot be imported, so it can be recovered.
         from lib.refund import parse_refund, process_refund
-        try:
-            parsed = response.json()
-        except ValueError:
-            parsed = None  # A signed non-JSON service response is valid.
         refund = parse_refund(parsed) if isinstance(parsed, dict) else None
         if refund:
             try:
@@ -631,13 +662,30 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
                     "satoshis": refund.satoshis, "txid": refund.txid,
                 }
             except Exception as exc:
-                raise _unresolved(record, path, "refund internalization failed") from exc
+                record["response"] = {
+                    "status": response.status_code, "headers": dict(response.headers),
+                    "body": base64.b64encode(response.content).decode("ascii"),
+                }
+                command = _recovery_command(path, "import-refund")
+                error = f"refund internalization failed ({type(exc).__name__})"
+                try:
+                    _save_pending(record, path)
+                except OSError:
+                    # Return the response even if the disk has become unwritable.
+                    print("Could not save refund response. Recovery JSON: " +
+                          json.dumps(record), file=sys.stderr)
+                    error += "; response save failed; recovery JSON printed to stderr"
+                response.refund_result = {
+                    "processed": False, "error": error,
+                    "path": str(path), "command": command,
+                }
+                log.error("Payment %s: %s. Saved response: %s. Import by hand: %s",
+                          record["txid"], error, path, command)
+                return response
         if response.status_code < 400 or refund:
             path.unlink(missing_ok=True)
         else:
-            log.warning("Payment %s returned signed HTTP %s; saved at %s. "
-                        "Retry the same payment by hand: %s",
-                        record["txid"], response.status_code, path, _retry_command(path))
+            _unresolved(record, path, f"returned signed HTTP {response.status_code}")
         return response
     raise _unresolved(record, path, f"identical-payment retries exhausted: {last_error}")
 
@@ -649,6 +697,10 @@ def retry_payment(path: str | Path) -> requests.Response:
     record = json.loads(path.read_text())
     if record["identity_key"] != get_identity_key():
         raise PaymentError("Use the wallet identity that created this payment to retry it.")
+    if "response" in record:
+        raise PaymentError(
+            f"Payment {record['txid']}: response already saved at {path}; "
+            f"import its refund by hand: {_recovery_command(path, 'import-refund')}")
     return _send_pending(record, path, MAX_PAYMENT_ATTEMPTS)
 
 
@@ -663,11 +715,21 @@ def paid_request(
 
     ``max_payment_attempts`` limits retries after the first paid send. All sends
     must begin within five minutes of receiving the quote (or the server's
-    earlier Date). Failures before payment creation propagate without paid retries.
+    earlier Date within 60 seconds of local time). Responses may take 300 seconds
+    after a send starts. Failures before payment creation propagate without paid retries.
     """
     from urllib.parse import urlparse
 
     headers = {k.lower(): v for k, v in (headers or {}).items()}
+    # Normalize once, then preserve exactly these bytes for every send and replay.
+    if isinstance(body, str):
+        try:
+            body = json.dumps(json.loads(body), separators=(",", ":"))
+        except ValueError:
+            pass
+        body = body.encode("utf-8")
+    if body is not None:
+        headers.setdefault("content-type", "application/json")
     response = authenticated_request(method=method, url=url, headers=dict(headers), body=body)
     quote_time = time.time()
     if response.status_code != 402 or response.signature_verdict != "signed":
@@ -675,7 +737,9 @@ def paid_request(
     payment_req = parse_402_response(response)
     if response.headers.get("Date"):
         try:
-            quote_time = min(quote_time, parsedate_to_datetime(response.headers["Date"]).timestamp())
+            server_time = parsedate_to_datetime(response.headers["Date"]).timestamp()
+            if quote_time - 60 <= server_time <= quote_time:
+                quote_time = server_time
         except (ValueError, TypeError, OverflowError):
             pass
     expires_at = quote_time + QUOTE_WINDOW
@@ -688,16 +752,7 @@ def paid_request(
     payment = create_payment(payment_req.derivation_prefix, session.server_identity_key,
                              payment_req.satoshis, server_base)
     payment_json = json.dumps(payment, separators=(",", ":"))
-    # Normalize once, then preserve exactly these bytes for every send and replay.
-    if isinstance(body, str):
-        try:
-            body = json.dumps(json.loads(body), separators=(",", ":"))
-        except ValueError:
-            pass
-        body = body.encode("utf-8")
     original_body = body
-    if body is not None:
-        headers.setdefault("content-type", "application/json")
     if len(payment_json) > MULTIPART_THRESHOLD and payment_req.supports_multipart():
         body, headers["content-type"] = build_multipart_body(
             payment_json, body, headers.get("content-type"))
@@ -712,6 +767,7 @@ def paid_request(
     try:
         path = _save_pending(record)
     except OSError as exc:
+        print(f"Payment {payment.txid} recovery JSON: {payment_json}", file=sys.stderr)
         raise PaymentError(f"Payment {payment.txid}: could not save recovery file: {exc}") from exc
     return _send_pending(record, path, max_payment_attempts)
 
