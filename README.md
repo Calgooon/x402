@@ -199,6 +199,8 @@ Run checks with `python3 -m pytest -q`. Regenerate the Available Services table 
 
 ## Changelog
 
+- **1.1.4** - Honour Retry-After on signed 503 payment-unavailable or retryable responses, reusing the identical payment and retaining expired recovery records.
+
 - **1.1.3** - Retry identical payments after lost responses without paying twice. Save pending requests by txid and provide a `retry-payment` recovery command. Stop on signed replay or expired-quote codes; retain expired payments as `expired-unclaimed` with recovery instructions, time and server details, and remove records only for signed HTTP 200, claimed replay, or imported refunds. Report unsigned or signed paid 402 refusals with the txid. Bound send starts by the quote window while retaining the 300-second response timeout and one session refresh. Preserve delivered responses and refund bytes on import failure, with an `import-refund` command. Normalize the body once before quoting, tolerate stale server clocks beyond 60 seconds, suppress expired retry commands, and print payment JSON if the initial recovery-file write fails.
 
 - **1.1.2** - Document the MetaNet Client and headless wallet paths, including gaps in the wallet README. Generate all service rows, exact registry tier ranges, and sync/async delivery from the public registry.
