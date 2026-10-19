@@ -500,9 +500,10 @@ def test_unavailable_retries_identical_payment(server, body, header, delay):
     assert not (payment.PENDING_DIR / f"{TXID}.json").exists()
 
 
-def test_unavailable_retry_after_capped_at_quote_expiry(server):
+@pytest.mark.parametrize("status", [202, 503])
+def test_retry_after_capped_at_quote_expiry(server, status):
     outcomes, actions, calls, sleeps, now, _ = server
-    outcomes.append((503, {"code": "ERR_PAYMENT_UNAVAILABLE", "retryable": True},
+    outcomes.append((status, {"code": "ERR_PAYMENT_UNAVAILABLE", "retryable": True},
                      True, {"Retry-After": "900"}))
     with pytest.raises(payment.PaymentError, match="the quote expired"):
         payment.paid_request("POST", URL)
@@ -528,3 +529,29 @@ def test_nonretryable_signed_503_keeps_existing_handling(server):
     saved = json.loads((payment.PENDING_DIR / f"{TXID}.json").read_text())
     assert saved["state"] == "terminal-unresolved"
     assert sleeps == [] and len(actions) == 1 and len(calls) == 2
+
+
+@pytest.mark.parametrize("retry_after", ["0", "1"])
+def test_unavailable_exhausts_separate_six_attempt_budget(server, retry_after):
+    outcomes, actions, calls, sleeps, now, _ = server
+    outcomes.extend([(503, {"code": "ERR_PAYMENT_UNAVAILABLE"}, True,
+                      {"Retry-After": retry_after})] * 6)
+    with pytest.raises(payment.PaymentError, match="identical-payment retries exhausted"):
+        payment.paid_request("POST", URL, body="same payload", max_payment_attempts=0)
+    saved = json.loads((payment.PENDING_DIR / f"{TXID}.json").read_text())
+    assert saved.get("state") not in ("expired-unclaimed", "terminal-unresolved")
+    assert now[0] < saved["expires_at"]
+    assert len(actions) == 1 and len(calls) == 7
+    assert sleeps == [int(retry_after)] * 5
+    assert all(call[1] == calls[1][1] for call in calls[1:])
+    assert all(call[0]["x-bsv-payment"] == calls[1][0]["x-bsv-payment"]
+               for call in calls[1:])
+
+
+def test_unavailable_does_not_consume_ordinary_retry_budget(server):
+    outcomes, actions, calls, sleeps, _, _ = server
+    outcomes.extend([(503, {"retryable": True}, True, {"Retry-After": "1"})] * 5)
+    outcomes.extend([(503, None, False), (200, {"ok": True}, True)])
+    assert payment.paid_request("POST", URL, max_payment_attempts=1).status_code == 200
+    assert sleeps == [1] * 5 + [2]
+    assert len(actions) == 1 and len(calls) == 8
