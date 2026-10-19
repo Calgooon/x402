@@ -53,9 +53,10 @@ PAYMENT_PROTOCOL = [2, "3241645161d8"]
 # BRC-29 payment protocol version.  Must match server expectation.
 PAYMENT_VERSION = "1.0"
 
-# Maximum number of retries after the first paid send.
+# Maximum number of ordinary retries after the first paid send.
 MAX_PAYMENT_ATTEMPTS = 3
 PAYMENT_BACKOFF = (2, 5, 10)
+MAX_UNAVAILABLE_ATTEMPTS = 6
 QUOTE_WINDOW = 300
 PENDING_DIR = Path.home() / ".x402" / "pending"
 
@@ -619,9 +620,18 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
     body = base64.b64decode(record["body"]) if record["body"] is not None else None
     last_error = "quote window expired"
     retry_after = None
-    for attempt in range(min(max(0, max_retries), len(PAYMENT_BACKOFF)) + 1):
-        if attempt:
-            delay = retry_after if retry_after is not None else PAYMENT_BACKOFF[attempt - 1]
+    ordinary_retries = 0
+    unavailable_attempts = 0
+    unavailable_retry = False
+    first_send = True
+    retry_limit = min(max(0, max_retries), len(PAYMENT_BACKOFF))
+    while True:
+        if not first_send:
+            if not unavailable_retry:
+                if ordinary_retries >= retry_limit:
+                    break
+                ordinary_retries += 1
+            delay = retry_after if retry_after is not None else PAYMENT_BACKOFF[ordinary_retries - 1]
             if retry_after is not None:
                 delay = min(delay, max(0, record["expires_at"] - time.time()))
                 time.sleep(delay)
@@ -630,6 +640,8 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
                 break
             else:
                 time.sleep(delay)
+        first_send = False
+        unavailable_retry = False
         remaining = record["expires_at"] - time.time()
         if remaining <= 0:
             break
@@ -670,6 +682,11 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
         )
         if response.status_code == 202 or unavailable:
             last_error = "payment unavailable" if unavailable else "payment outcome still pending"
+            if unavailable:
+                unavailable_attempts += 1
+                if unavailable_attempts >= MAX_UNAVAILABLE_ATTEMPTS:
+                    break
+                unavailable_retry = True
             try:
                 retry_after = max(0, int(response.headers.get("Retry-After", "5")))
             except ValueError:
@@ -747,9 +764,10 @@ def paid_request(
     body: bytes | str | None = None,
     max_payment_attempts: int = MAX_PAYMENT_ATTEMPTS,
 ) -> requests.Response:
-    """Pay a verified quote once; retry the identical payment at most three times.
+    """Pay a verified quote once; retry the identical payment within bounded budgets.
 
-    ``max_payment_attempts`` limits retries after the first paid send. All sends
+    ``max_payment_attempts`` limits ordinary retries after the first paid send.
+    Signed retryable 503s have a separate six-attempt budget. All sends
     must begin within five minutes of receiving the quote (or the server's
     earlier Date within 60 seconds of local time). Responses may take 300 seconds
     after a send starts. Failures before payment creation propagate without paid retries.
