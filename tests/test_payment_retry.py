@@ -67,7 +67,7 @@ def server(net, monkeypatch, tmp_path):
             outcome = outcomes.pop(0)
             if isinstance(outcome, Exception):
                 raise outcome
-            status, body, signed = outcome
+            status, body, signed, *extra = outcome
         response = requests.Response()
         response.status_code = status
         response._content = json.dumps(body).encode() if body is not None else b""
@@ -82,6 +82,8 @@ def server(net, monkeypatch, tmp_path):
         response.headers["x-bsv-auth-your-nonce"] = load_session(URL.rsplit("/", 1)[0]).client_nonce_b64
         if status == 402:
             response.headers.update(quote_headers)
+        if len(calls) > 1 and extra:
+            response.headers.update(extra[0])
         if signed:
             rid = base64.b64decode(headers["x-bsv-auth-request-id"])
             payload = serialize_response(rid, status, filter_signable_headers(response.headers), response.content or None)
@@ -482,3 +484,47 @@ def test_unconfirmed_response_keeps_terminal_record(server, status, code):
     with pytest.raises(payment.PaymentError, match="keep this file"):
         payment.retry_payment(path)
     assert len(actions) == 1 and len(calls) == 2
+
+
+@pytest.mark.parametrize("body", [{"code": "ERR_PAYMENT_UNAVAILABLE"},
+                                  {"code": "OTHER", "retryable": True}])
+@pytest.mark.parametrize("header, delay", [("7", 7), ("invalid", 5), (None, 5)])
+def test_unavailable_retries_identical_payment(server, body, header, delay):
+    outcomes, actions, calls, sleeps, _, _ = server
+    headers = {} if header is None else {"Retry-After": header}
+    outcomes.extend([(503, body, True, headers), (200, {"ok": True}, True)])
+    assert payment.paid_request("POST", URL, body="same payload").status_code == 200
+    assert sleeps == [delay] and len(actions) == 1
+    assert calls[1][1] == calls[2][1]
+    assert calls[1][0]["x-bsv-payment"] == calls[2][0]["x-bsv-payment"]
+    assert not (payment.PENDING_DIR / f"{TXID}.json").exists()
+
+
+def test_unavailable_retry_after_capped_at_quote_expiry(server):
+    outcomes, actions, calls, sleeps, now, _ = server
+    outcomes.append((503, {"code": "ERR_PAYMENT_UNAVAILABLE", "retryable": True},
+                     True, {"Retry-After": "900"}))
+    with pytest.raises(payment.PaymentError, match="the quote expired"):
+        payment.paid_request("POST", URL)
+    saved = json.loads((payment.PENDING_DIR / f"{TXID}.json").read_text())
+    assert saved["state"] == "expired-unclaimed"
+    assert saved["terminal_at"] == now[0] == saved["expires_at"]
+    assert sleeps == [300] and len(actions) == 1 and len(calls) == 2
+
+
+def test_unsigned_unavailable_ignores_retry_after(server):
+    outcomes, actions, calls, sleeps, _, _ = server
+    outcomes.extend([(503, {"code": "ERR_PAYMENT_UNAVAILABLE", "retryable": True},
+                      False, {"Retry-After": "900"}), (200, {"ok": True}, True)])
+    assert payment.paid_request("POST", URL).status_code == 200
+    assert sleeps == [2] and len(actions) == 1 and len(calls) == 3
+
+
+def test_nonretryable_signed_503_keeps_existing_handling(server):
+    outcomes, actions, calls, sleeps, _, _ = server
+    outcomes.append((503, {"code": "OTHER", "retryable": False}, True,
+                     {"Retry-After": "7"}))
+    assert payment.paid_request("POST", URL).status_code == 503
+    saved = json.loads((payment.PENDING_DIR / f"{TXID}.json").read_text())
+    assert saved["state"] == "terminal-unresolved"
+    assert sleeps == [] and len(actions) == 1 and len(calls) == 2

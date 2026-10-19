@@ -622,10 +622,14 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
     for attempt in range(min(max(0, max_retries), len(PAYMENT_BACKOFF)) + 1):
         if attempt:
             delay = retry_after if retry_after is not None else PAYMENT_BACKOFF[attempt - 1]
-            retry_after = None
-            if time.time() + delay >= record["expires_at"]:
+            if retry_after is not None:
+                delay = min(delay, max(0, record["expires_at"] - time.time()))
+                time.sleep(delay)
+                retry_after = None
+            elif time.time() + delay >= record["expires_at"]:
                 break
-            time.sleep(delay)
+            else:
+                time.sleep(delay)
         remaining = record["expires_at"] - time.time()
         if remaining <= 0:
             break
@@ -661,8 +665,11 @@ def _send_pending(record: dict, path: Path, max_retries: int) -> requests.Respon
                 "to the first request or will be refunded. No payment remains to retry.")
         if response.status_code == 402:
             raise _unresolved(record, path, "paid request returned HTTP 402; no new payment created")
-        if response.status_code == 202:
-            last_error = "payment outcome still pending"
+        unavailable = response.status_code == 503 and isinstance(parsed, dict) and (
+            code == "ERR_PAYMENT_UNAVAILABLE" or parsed.get("retryable") is True
+        )
+        if response.status_code == 202 or unavailable:
+            last_error = "payment unavailable" if unavailable else "payment outcome still pending"
             try:
                 retry_after = max(0, int(response.headers.get("Retry-After", "5")))
             except ValueError:

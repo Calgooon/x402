@@ -1,5 +1,6 @@
 ---
 name: x402
+version: 1.1.4
 description: "Make BSV-authenticated or paid API requests. Use for: BRC-31 auth, 402 payment, BSV micropayments, x402, paid API calls. Requires a BRC-100 wallet (MetaNet Client at localhost:3321, or X402_WALLET_URL)."
 argument-hint: [URL or description of API to call]
 ---
